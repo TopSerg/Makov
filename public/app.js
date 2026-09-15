@@ -44,6 +44,7 @@
     } catch (e) {
       app.innerHTML = `<section class="page"><div class="callout"><b>Ошибка загрузки:</b> ${esc(e.message)}</div><p class="muted">Проверь переменные SUPABASE_URL и SUPABASE_PUBLISHABLE_KEY в Netlify и права RLS в Supabase.</p></section>`;
     }
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     app.focus();
   }
 
@@ -80,42 +81,120 @@
   }
 
   function renderTree(app) {
-    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая горизонтальная строка — одно поколение. Отцовская и материнская линии разведены по разным секторам; внутри них ветви родителей также разделяются.</p></div><div class="meta-chip">${people.length} записей</div></section>
+    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая горизонтальная строка — одно поколение. Супруги всегда образуют один семейный блок, а разделители начинаются только выше пары — там, где ветвь действительно расходится на родителей.</p></div><div class="meta-chip">${people.length} записей</div></section>
       <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button><label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>мало сведений</span><span><i class="dot unconfirmed"></i>не подтверждено</span></div></div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
 
     const svg = $('.tree-svg'), scene = $('#scene'), vp = $('#treeViewport');
-    const W=230, H=82, YS=170, CLUSTER_GAP=245;
+    const W=230, H=82, YS=172, PERSON_GAP=18, UNIT_GAP=82;
     const allGenerations = people.map(generationOf);
     const maxGen = Math.max(0, ...allGenerations);
     let scale=.8, tx=vp.clientWidth/2, ty=90, dragging=false, last={x:0,y:0};
+
+    const spouseEdges = relationships.filter(r => r.relationship_type === 'spouse_of');
 
     function visiblePeople() {
       return people.filter(p => $('#showCandidates').checked || p.confidence !== 'unconfirmed');
     }
 
-    function layout() {
-      const groups = new Map();
-      for (const p of visiblePeople()) {
-        const g = generationOf(p);
-        const path = p.lineage_path || '';
-        const key = `${g}|${path}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(p);
+    function coupleComponents(arr) {
+      const ids = new Set(arr.map(p=>p.id));
+      const parent = new Map(arr.map(p=>[p.id,p.id]));
+      const find = x => {
+        let r=x;
+        while(parent.get(r)!==r) r=parent.get(r);
+        while(parent.get(x)!==x){ const n=parent.get(x); parent.set(x,r); x=n; }
+        return r;
+      };
+      const unite=(a,b)=>{
+        const ra=find(a), rb=find(b);
+        if(ra!==rb) parent.set(rb,ra);
+      };
+      for(const r of spouseEdges){
+        if(ids.has(r.person_a_id) && ids.has(r.person_b_id)) unite(r.person_a_id,r.person_b_id);
+      }
+      const groups=new Map();
+      for(const p of arr){
+        const root=find(p.id);
+        if(!groups.has(root)) groups.set(root,[]);
+        groups.get(root).push(p);
+      }
+      return [...groups.values()];
+    }
+
+    function unitPath(unit, g) {
+      const paths=[...new Set(unit.map(p=>p.lineage_path || ''))];
+      if(paths.length===1) return paths[0];
+
+      // The focal parents are a married pair whose personal P/M paths differ,
+      // but visually they must remain one central family unit.
+      if(g===1 && paths.includes('P') && paths.includes('M')) return '';
+
+      // Otherwise keep the longest common prefix so a spouse pair stays together.
+      let prefix=paths[0] || '';
+      for(const p of paths.slice(1)){
+        let i=0;
+        while(i<prefix.length && i<p.length && prefix[i]===p[i]) i++;
+        prefix=prefix.slice(0,i);
+      }
+      return prefix;
+    }
+
+    function unitsForLayout() {
+      const byGeneration=new Map();
+      for(const p of visiblePeople()){
+        const g=generationOf(p);
+        if(!byGeneration.has(g)) byGeneration.set(g,[]);
+        byGeneration.get(g).push(p);
       }
 
-      const pos = new Map();
-      for (const [key, arr] of groups) {
-        const [gRaw, path] = key.split('|');
-        const g = Number(gRaw);
-        arr.sort((a,b)=>fullName(a).localeCompare(fullName(b), 'ru'));
-        const center = branchCenter(path);
-        const offset = -((arr.length - 1) * CLUSTER_GAP) / 2;
-        arr.forEach((p,i) => pos.set(p.id, {
-          x: center + offset + i * CLUSTER_GAP,
-          y: (maxGen - g) * YS,
-          generation: g,
-          path
-        }));
+      const units=[];
+      for(const [g, arr] of byGeneration){
+        for(const members of coupleComponents(arr)){
+          members.sort((a,b)=>{
+            const sexRank = x => x.sex==='male' ? 0 : x.sex==='female' ? 1 : 2;
+            return sexRank(a)-sexRank(b) || fullName(a).localeCompare(fullName(b),'ru');
+          });
+          units.push({
+            generation:g,
+            path:unitPath(members,g),
+            members
+          });
+        }
+      }
+      return units;
+    }
+
+    function layout() {
+      const units=unitsForLayout();
+      const groups=new Map();
+      for(const unit of units){
+        const key=`${unit.generation}|${unit.path}`;
+        if(!groups.has(key)) groups.set(key,[]);
+        groups.get(key).push(unit);
+      }
+
+      const pos=new Map();
+      for(const [key, groupUnits] of groups){
+        const [gRaw,path]=key.split('|');
+        const g=Number(gRaw);
+        groupUnits.sort((a,b)=>fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru'));
+
+        const widths=groupUnits.map(u=>u.members.length*W+(u.members.length-1)*PERSON_GAP);
+        const totalWidth=widths.reduce((s,x)=>s+x,0)+Math.max(0,groupUnits.length-1)*UNIT_GAP;
+        let cursor=branchCenter(path)-totalWidth/2;
+
+        groupUnits.forEach((unit,ui)=>{
+          unit.members.forEach((p,mi)=>{
+            const x=cursor+mi*(W+PERSON_GAP)+W/2;
+            pos.set(p.id,{
+              x,
+              y:(maxGen-g)*YS,
+              generation:g,
+              path
+            });
+          });
+          cursor+=widths[ui]+UNIT_GAP;
+        });
       }
       return pos;
     }
@@ -123,59 +202,88 @@
     function apply(){ scene.setAttribute('transform', `translate(${tx} ${ty}) scale(${scale})`); }
     function trunc(s,n){ s=String(s||''); return esc(s.length>n ? s.slice(0,n-1)+'…' : s); }
 
+    function subtreePresent(prefix) {
+      return visiblePeople().some(p => (p.lineage_path || '').startsWith(prefix));
+    }
+
+    function recursiveDividers(minY) {
+      const paths=[...new Set(visiblePeople().map(p=>p.lineage_path || '').filter(Boolean))];
+      const prefixes=new Set(['']);
+      for(const path of paths){
+        for(let i=0;i<path.length;i++) prefixes.add(path.slice(0,i));
+      }
+
+      const lines=[];
+      for(const prefix of prefixes){
+        const left=prefix+'P', right=prefix+'M';
+        if(!subtreePresent(left) || !subtreePresent(right)) continue;
+
+        // A prefix of length d represents the couple one generation below
+        // the two parent branches. Stop the separator above that couple row.
+        const coupleGeneration=prefix.length+1;
+        if(coupleGeneration>maxGen) continue;
+        const yEnd=(maxGen-coupleGeneration)*YS-H/2-20;
+        const cls=prefix==='' ? 'branch-divider main' : 'branch-divider secondary';
+        lines.push(`<line class="${cls}" x1="${branchCenter(prefix)}" y1="${minY}" x2="${branchCenter(prefix)}" y2="${yEnd}"/>`);
+      }
+      return lines.join('');
+    }
+
     function draw(focus='') {
-      const pos = layout();
-      const ids = new Set([...pos.keys()]);
-      if (!pos.size) { scene.innerHTML=''; return; }
+      const pos=layout();
+      const ids=new Set([...pos.keys()]);
+      if(!pos.size){ scene.innerHTML=''; return; }
 
       const ps=[...pos.values()];
       const minX=Math.min(...ps.map(p=>p.x-W/2))-360;
-      const maxX=Math.max(...ps.map(p=>p.x+W/2))+180;
-      const minY=Math.min(...ps.map(p=>p.y-H/2))-80;
-      const maxY=Math.max(...ps.map(p=>p.y+H/2))+80;
+      const maxX=Math.max(...ps.map(p=>p.x+W/2))+220;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-105;
+      const maxY=Math.max(...ps.map(p=>p.y+H/2))+85;
 
       const generations=[...new Set(ps.map(p=>p.generation))].sort((a,b)=>b-a);
-      const rows = generations.map(g => {
+      const rows=generations.map(g=>{
         const y=(maxGen-g)*YS;
         return `<g class="generation-guide"><line x1="${minX}" y1="${y+H/2+43}" x2="${maxX}" y2="${y+H/2+43}"/><text x="${minX+8}" y="${y-H/2-18}">${esc(generationTitle(g))}</text></g>`;
       }).join('');
 
-      const mainDivider = `
+      const branchGuides=`
         <g class="branch-guides">
-          <line class="branch-divider main" x1="0" y1="${minY}" x2="0" y2="${maxY}"/>
-          <text class="branch-title paternal" x="-2100" y="${minY+24}">ОТЦОВСКАЯ ВЕТВЬ</text>
-          <text class="branch-title maternal" x="2100" y="${minY+24}">МАТЕРИНСКАЯ ВЕТВЬ</text>
-          <line class="branch-divider secondary" x1="-2100" y1="${minY+45}" x2="-2100" y2="${(maxGen-2)*YS+H/2+42}"/>
-          <line class="branch-divider secondary" x1="2100" y1="${minY+45}" x2="2100" y2="${(maxGen-2)*YS+H/2+42}"/>
+          ${recursiveDividers(minY)}
+          ${subtreePresent('P') ? `<text class="branch-title paternal" x="${branchCenter('P')}" y="${minY+24}">ОТЦОВСКАЯ ВЕТВЬ</text>` : ''}
+          ${subtreePresent('M') ? `<text class="branch-title maternal" x="${branchCenter('M')}" y="${minY+24}">МАТЕРИНСКАЯ ВЕТВЬ</text>` : ''}
         </g>`;
 
-      const edgeHtml = relationships.filter(r => ids.has(r.person_a_id) && ids.has(r.person_b_id)).map(r => {
-        const a=pos.get(r.person_a_id), b=pos.get(r.person_b_id); if(!a||!b) return '';
-        const un = r.confidence === 'unconfirmed' ? 'unconfirmed' : '';
-        if (r.relationship_type === 'spouse_of') {
-          return `<path class="edge spouse ${un}" d="M ${a.x+W/2} ${a.y} L ${b.x-W/2} ${b.y}"/>`;
+      const edgeHtml=relationships.filter(r=>ids.has(r.person_a_id)&&ids.has(r.person_b_id)).map(r=>{
+        const a=pos.get(r.person_a_id), b=pos.get(r.person_b_id);
+        if(!a||!b) return '';
+        const un=r.confidence==='unconfirmed' ? 'unconfirmed' : '';
+
+        if(r.relationship_type==='spouse_of'){
+          const left=a.x<=b.x?a:b, right=a.x<=b.x?b:a;
+          return `<path class="edge spouse ${un}" d="M ${left.x+W/2} ${left.y} L ${right.x-W/2} ${right.y}"/>`;
         }
-        if (r.relationship_type !== 'parent_of') return '';
+
+        if(r.relationship_type!=='parent_of') return '';
         const y1=a.y+H/2, y2=b.y-H/2, mid=(y1+y2)/2;
         return `<path class="edge ${un}" d="M ${a.x} ${y1} C ${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${y2}"/>`;
       }).join('');
 
-      const nodeHtml = visiblePeople().map(p => {
+      const nodeHtml=visiblePeople().map(p=>{
         const q=pos.get(p.id), st=statusClass(p);
-        const branch = p.lineage_path ? ` · ${p.lineage_path}` : '';
+        const branch=p.lineage_path ? ` · ${p.lineage_path}` : '';
         return `<g class="node ${st} ${p.id===focus?'focused':''}" data-id="${p.id}" transform="translate(${q.x-W/2},${q.y-H/2})"><rect rx="14" width="${W}" height="${H}"/><text class="name" x="14" y="24">${trunc(fullName(p),28)}</text><text class="sub" x="14" y="45">${trunc(years(p)||p.birth_place||'',31)}</text><text class="tag" x="14" y="66">${trunc(`Поколение ${generationOf(p)}${branch}`,28)}</text></g>`;
       }).join('');
 
-      scene.innerHTML=rows+mainDivider+edgeHtml+nodeHtml;
-      $$('.node', scene).forEach(n=>n.onclick=()=>location.hash=`#/person/${n.dataset.id}`);
+      scene.innerHTML=rows+branchGuides+edgeHtml+nodeHtml;
+      $$('.node',scene).forEach(n=>n.onclick=()=>location.hash=`#/person/${n.dataset.id}`);
       apply();
     }
 
-    function fit() {
+    function fit(){
       const pos=layout(); if(!pos.size) return;
       const ps=[...pos.values()];
-      const minX=Math.min(...ps.map(p=>p.x-W/2))-380, maxX=Math.max(...ps.map(p=>p.x+W/2))+220;
-      const minY=Math.min(...ps.map(p=>p.y-H/2))-100, maxY=Math.max(...ps.map(p=>p.y+H/2))+100;
+      const minX=Math.min(...ps.map(p=>p.x-W/2))-390, maxX=Math.max(...ps.map(p=>p.x+W/2))+240;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-120, maxY=Math.max(...ps.map(p=>p.y+H/2))+110;
       const bw=Math.max(1,maxX-minX), bh=Math.max(1,maxY-minY);
       scale=Math.min((vp.clientWidth-70)/bw,(vp.clientHeight-70)/bh,1);
       tx=vp.clientWidth/2-(minX+maxX)/2*scale;
@@ -183,7 +291,7 @@
       apply();
     }
 
-    function center(id) {
+    function center(id){
       const p=peopleMap.get(id); if(!p) return;
       const q=layout().get(id); if(!q) return;
       scale=Math.max(scale,.95);
@@ -192,7 +300,7 @@
       draw(id);
     }
 
-    svg.addEventListener('wheel', e=>{
+    svg.addEventListener('wheel',e=>{
       e.preventDefault();
       const rect=svg.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top, old=scale;
       scale=Math.max(.28,Math.min(2.2,scale*(e.deltaY<0?1.1:.9)));
