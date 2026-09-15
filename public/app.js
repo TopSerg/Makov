@@ -288,6 +288,7 @@
     try {
       if ((page || 'tree') === 'tree') renderTree(app);
       else if (page === 'person') await renderPerson(app, id);
+      else if (page === 'questions') await renderQuestions(app);
       else if (page === 'about') renderAbout(app);
       else if (page === 'access') {
         if (viewer?.role !== "admin") location.hash = '#/tree';
@@ -650,6 +651,229 @@
     </section>`;
   }
 
+  const questionPriorityWeight = { "Критический": 0, "Высокий": 1, "Средний": 2, "Низкий": 3 };
+
+  function questionPriorityClass(priority) {
+    return priority === "Критический" ? "critical"
+      : priority === "Высокий" ? "high"
+      : priority === "Средний" ? "medium"
+      : "low";
+  }
+
+  function questionBranch(question) {
+    const line = String(question.family_line || "");
+    if (line.startsWith("Отцовская")) return "paternal";
+    if (line.startsWith("Материнская")) return "maternal";
+    return "close";
+  }
+
+  async function loadQuestionsData() {
+    return api("/.netlify/functions/questions");
+  }
+
+  async function submitQuestionAnswer(questionId, answerText) {
+    return api("/.netlify/functions/question-answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        question_id: questionId,
+        answer_text: answerText
+      })
+    });
+  }
+
+  async function loadAdminQuestionAnswers() {
+    if (viewer?.role !== "admin") return { answers: [] };
+    return api("/.netlify/functions/admin-question-answers");
+  }
+
+  async function reviewQuestionAnswer(answerId, decision, note="") {
+    return api("/.netlify/functions/admin-question-answers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        answer_id: answerId,
+        decision,
+        note
+      })
+    });
+  }
+
+  async function refreshQuestionBadge() {
+    const badge = $("#questionBadge");
+    if (!badge || !authUser) return;
+    try {
+      const data = await loadQuestionsData();
+      const count = (data.questions || []).filter(q =>
+        q.status === "open" && q.channel !== "archive"
+      ).length;
+      badge.textContent = String(count);
+      badge.hidden = count === 0;
+    } catch {
+      badge.hidden = true;
+    }
+  }
+
+  function questionAnswerHtml(answer, ownUserId) {
+    const own = answer.submitted_by === ownUserId;
+    const label = answer.status === "accepted"
+      ? "Подтверждённый ответ родственника"
+      : answer.status === "pending"
+        ? (own ? "Ваш ответ ожидает проверки" : "Ответ ожидает проверки")
+        : "Ответ отклонён";
+    return `<div class="question-contribution ${answer.status}"><div class="small">${esc(label)} · ${new Date(answer.submitted_at).toLocaleString("ru-RU")}</div><div class="question-answer-text">${esc(answer.answer_text)}</div>${answer.review_note ? `<div class="small">Комментарий: ${esc(answer.review_note)}</div>` : ""}</div>`;
+  }
+
+  async function renderQuestionModeration(container, questionsById) {
+    if (viewer?.role !== "admin") return;
+    const data = await loadAdminQuestionAnswers();
+    const pending = (data.answers || []).filter(a => a.status === "pending");
+    if (!pending.length) return;
+
+    const html = `<section class="question-moderation card"><div class="page-head compact"><div><div class="eyebrow">Новые ответы</div><h2>Нужно проверить</h2></div><span class="meta-chip">${pending.length}</span></div><div class="moderation-list">${pending.map(a => {
+      const q = questionsById.get(a.question_id);
+      const who = a.submitter?.display_name || "Родственник";
+      return `<article class="moderation-item" data-moderation="${a.id}"><div><div class="small">${esc(a.question_id)} · ${esc(who)} · ${new Date(a.submitted_at).toLocaleString("ru-RU")}</div><b>${esc(q?.question || a.question_id)}</b><p>${esc(a.answer_text)}</p></div><div class="moderation-actions"><textarea rows="2" data-review-note="${a.id}" placeholder="Комментарий (необязательно)"></textarea><div class="access-action-row"><button class="btn primary" data-accept-answer="${a.id}">Принять</button><button class="btn danger" data-reject-answer="${a.id}">Отклонить</button></div></div></article>`;
+    }).join("")}</div></section>`;
+
+    container.insertAdjacentHTML("afterbegin", html);
+
+    $$("[data-accept-answer]", container).forEach(btn => btn.onclick = async () => {
+      const id = btn.dataset.acceptAnswer;
+      const note = $("[data-review-note=\"" + id + "\"]", container)?.value || "";
+      btn.disabled = true;
+      try {
+        await reviewQuestionAnswer(id, "accepted", note);
+        toast("Ответ принят");
+        await refreshQuestionBadge();
+        await renderQuestions($("#app"));
+      } catch (e) {
+        toast(e.message);
+        btn.disabled = false;
+      }
+    });
+
+    $$("[data-reject-answer]", container).forEach(btn => btn.onclick = async () => {
+      const id = btn.dataset.rejectAnswer;
+      const note = $("[data-review-note=\"" + id + "\"]", container)?.value || "";
+      btn.disabled = true;
+      try {
+        await reviewQuestionAnswer(id, "rejected", note);
+        toast("Ответ отклонён");
+        await renderQuestions($("#app"));
+      } catch (e) {
+        toast(e.message);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  async function renderQuestions(app) {
+    const data = await loadQuestionsData();
+    const questions = data.questions || [];
+    const answers = data.answers || [];
+    const viewerId = data.viewer?.id || authUser?.id;
+    const questionsById = new Map(questions.map(q => [q.id, q]));
+
+    const answersByQuestion = new Map();
+    for (const answer of answers) {
+      if (!answersByQuestion.has(answer.question_id)) answersByQuestion.set(answer.question_id, []);
+      answersByQuestion.get(answer.question_id).push(answer);
+    }
+
+    const familyQuestions = questions.filter(q => q.channel !== "archive");
+    const openCount = familyQuestions.filter(q => q.status === "open").length;
+    const answeredCount = familyQuestions.filter(q => q.status === "answered").length;
+
+    app.innerHTML = `<section class="page questions-page">
+      <div class="page-head"><div><div class="eyebrow">Семейное исследование</div><h1>Вопросы родственникам</h1><p class="muted">Здесь собраны вопросы из нашего журнала исследования. Отвечайте даже если знаете только часть — новые ответы сначала проходят проверку администратора.</p></div><span class="meta-chip">${openCount} открытых</span></div>
+      <div id="questionModeration"></div>
+      <div class="stats question-stats"><div class="stat"><b>${openCount}</b><span>открыто для семьи</span></div><div class="stat"><b>${answeredCount}</b><span>уже есть ответ</span></div><div class="stat"><b>${questions.filter(q=>q.priority==="Критический" && q.status==="open" && q.channel!=="archive").length}</b><span>критических</span></div><div class="stat"><b>${questions.length}</b><span>всего в базе</span></div></div>
+      <div class="question-toolbar card">
+        <input id="questionSearch" type="search" placeholder="Поиск по вопросу или человеку…">
+        <select id="questionStatus"><option value="open">Открытые</option><option value="answered">С ответом</option><option value="all">Все</option></select>
+        <select id="questionBranch"><option value="all">Все ветви</option><option value="paternal">Отцовская</option><option value="maternal">Материнская</option><option value="close">Ближайшая семья</option></select>
+        <select id="questionPriority"><option value="all">Любой приоритет</option><option value="Критический">Критический</option><option value="Высокий">Высокий</option><option value="Средний">Средний</option><option value="Низкий">Низкий</option></select>
+        <label class="archive-toggle"><input id="questionArchive" type="checkbox"> архивные задачи</label>
+      </div>
+      <div id="questionList" class="question-list"></div>
+    </section>`;
+
+    const list = $("#questionList", app);
+
+    function drawQuestions() {
+      const search = $("#questionSearch", app).value.trim().toLowerCase();
+      const status = $("#questionStatus", app).value;
+      const branch = $("#questionBranch", app).value;
+      const priority = $("#questionPriority", app).value;
+      const showArchive = $("#questionArchive", app).checked;
+
+      let filtered = questions.filter(q => {
+        if (!showArchive && q.channel === "archive") return false;
+        if (status !== "all" && q.status !== status) return false;
+        if (branch !== "all" && questionBranch(q) !== branch) return false;
+        if (priority !== "all" && q.priority !== priority) return false;
+        if (search) {
+          const hay = [q.id,q.family_line,q.subject,q.question,q.ask_or_verify,q.why_needed,q.legacy_answer].filter(Boolean).join(" ").toLowerCase();
+          if (!hay.includes(search)) return false;
+        }
+        return true;
+      });
+
+      filtered.sort((a,b) =>
+        (a.status === "open" ? 0 : 1) - (b.status === "open" ? 0 : 1)
+        || (questionPriorityWeight[a.priority] ?? 9) - (questionPriorityWeight[b.priority] ?? 9)
+        || a.id.localeCompare(b.id)
+      );
+
+      list.innerHTML = filtered.length ? filtered.map(q => {
+        const qAnswers = answersByQuestion.get(q.id) || [];
+        const accepted = qAnswers.filter(a => a.status === "accepted");
+        const minePending = qAnswers.filter(a => a.status === "pending" && a.submitted_by === viewerId);
+        const legacy = q.legacy_answer ? `<div class="question-known-answer"><div class="small">Уже известно из предыдущего исследования</div><div class="question-answer-text">${esc(q.legacy_answer)}</div></div>` : "";
+        const contributionHtml = [...accepted, ...minePending].map(a => questionAnswerHtml(a, viewerId)).join("");
+        return `<article class="question-card card ${q.status}" data-question-card="${q.id}">
+          <div class="question-card-head"><div class="question-meta"><span class="question-id">${esc(q.id)}</span><span class="priority-pill ${questionPriorityClass(q.priority)}">${esc(q.priority)}</span><span class="chip">${esc(q.family_line)}</span>${q.channel==="mixed" ? '<span class="chip">семья + документы</span>' : q.channel==="archive" ? '<span class="chip">архив</span>' : ""}</div><span class="question-state ${q.status}">${q.status==="answered" ? "Есть ответ" : "Открыт"}</span></div>
+          <div class="eyebrow">${esc(q.subject)}</div>
+          <h2>${esc(q.question)}</h2>
+          ${q.ask_or_verify ? `<div class="question-detail"><b>Кому задать / где проверить:</b> ${esc(q.ask_or_verify)}</div>` : ""}
+          ${q.why_needed ? `<div class="question-detail muted"><b>Зачем:</b> ${esc(q.why_needed)}</div>` : ""}
+          ${legacy}
+          ${contributionHtml}
+          <details class="question-answer-form"><summary>${q.status==="answered" ? "Дополнить ответ" : "Я могу ответить"}</summary><div class="question-answer-editor"><textarea rows="4" maxlength="5000" data-question-text="${q.id}" placeholder="Напишите всё, что помните. Можно указать, откуда вы это знаете, у кого есть документ или фотография."></textarea><button class="btn primary" data-question-submit="${q.id}">Отправить ответ</button></div></details>
+        </article>`;
+      }).join("") : '<div class="empty card">По выбранным фильтрам вопросов нет.</div>';
+
+      $$("[data-question-submit]", list).forEach(btn => btn.onclick = async () => {
+        const id = btn.dataset.questionSubmit;
+        const textarea = $("[data-question-text=\"" + id + "\"]", list);
+        const textValue = textarea.value.trim();
+        if (!textValue) {
+          toast("Напишите ответ");
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = "Отправка…";
+        try {
+          await submitQuestionAnswer(id, textValue);
+          toast("Ответ отправлен на проверку");
+          await renderQuestions(app);
+        } catch (e) {
+          toast(e.message);
+          btn.disabled = false;
+          btn.textContent = "Отправить ответ";
+        }
+      });
+    }
+
+    ["questionSearch","questionStatus","questionBranch","questionPriority","questionArchive"].forEach(id => {
+      $("#" + id, app).addEventListener(id === "questionSearch" ? "input" : "change", drawQuestions);
+    });
+
+    drawQuestions();
+    await renderQuestionModeration($("#questionModeration", app), questionsById);
+  }
+
   async function fetchAccessRequests(status="pending") {
     return api(`/.netlify/functions/admin-access-requests?status=${encodeURIComponent(status)}`);
   }
@@ -750,7 +974,7 @@
       hashListenerInstalled = true;
     }
     if (!location.hash || location.hash === "#/login") location.hash = "#/tree";
-    await refreshAccessBadge(true);
+    await Promise.all([refreshAccessBadge(true), refreshQuestionBadge()]);
     await route();
   }
 
