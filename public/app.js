@@ -3,18 +3,184 @@
   const $$ = (s, el=document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
   let people = [], relationships = [], peopleMap = new Map();
+  let authConfig = null, authSession = null, authUser = null;
+  let hashListenerInstalled = false;
+  const SESSION_KEY = "makov-family-session";
 
   const fullName = p => [p.last_name, p.first_name, p.middle_name].filter(Boolean).join(' ');
   const statusClass = p => p.confidence === 'unconfirmed' ? 'unconfirmed' : (p.information_level === 'minimal' ? 'limited' : 'confirmed');
   const statusText = p => statusClass(p) === 'unconfirmed' ? 'Неподтверждён' : statusClass(p) === 'limited' ? 'Мало информации' : 'Подтверждён';
   const years = p => [p.birth_display || '', p.death_display || ''].filter(Boolean).join(' — ');
 
-  async function api(path, options={}) {
-    const r = await fetch(path, options);
+  function readStoredSession() {
+    try {
+      return JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function saveSession(session) {
+    authSession = session;
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_KEY);
+  }
+
+  function setLoggedInUi(loggedIn) {
+    document.body.classList.toggle("logged-out", !loggedIn);
+  }
+
+  async function loadAuthConfig() {
+    const r = await fetch("/.netlify/functions/auth-config", { cache: "no-store" });
+    if (!r.ok) throw new Error("Не удалось загрузить конфигурацию авторизации");
+    authConfig = await r.json();
+  }
+
+  async function authRest(path, options={}) {
+    const headers = {
+      apikey: authConfig.publishableKey,
+      "content-type": "application/json",
+      ...(options.headers || {})
+    };
+    return fetch(`${authConfig.url}/auth/v1${path}`, { ...options, headers });
+  }
+
+  async function refreshSession() {
+    if (!authSession?.refresh_token) return false;
+    const r = await authRest("/token?grant_type=refresh_token", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: authSession.refresh_token })
+    });
+    if (!r.ok) {
+      saveSession(null);
+      authUser = null;
+      return false;
+    }
+    const data = await r.json();
+    saveSession(data);
+    authUser = data.user || authUser;
+    return true;
+  }
+
+  async function ensureAccessToken() {
+    if (!authSession?.access_token) return null;
+    const expiresAt = Number(authSession.expires_at || 0) * 1000;
+    if (expiresAt && expiresAt < Date.now() + 60000) {
+      const ok = await refreshSession();
+      if (!ok) return null;
+    }
+    return authSession.access_token;
+  }
+
+  async function validateSession() {
+    if (!authSession?.access_token) return null;
+    let token = await ensureAccessToken();
+    if (!token) return null;
+
+    let r = await authRest("/user", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (r.status === 401 && await refreshSession()) {
+      token = authSession.access_token;
+      r = await authRest("/user", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    }
+
+    if (!r.ok) {
+      saveSession(null);
+      return null;
+    }
+    return r.json();
+  }
+
+  async function signIn(email, password) {
+    const r = await authRest("/token?grant_type=password", {
+      method: "POST",
+      body: JSON.stringify({ email, password })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      throw new Error(data.error_description || data.msg || "Неверный email или пароль");
+    }
+    saveSession(data);
+    authUser = data.user || null;
+  }
+
+  async function signOut() {
+    const token = authSession?.access_token;
+    if (token) {
+      try {
+        await authRest("/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: "{}"
+        });
+      } catch {}
+    }
+    saveSession(null);
+    authUser = null;
+    people = [];
+    relationships = [];
+    peopleMap = new Map();
+    setLoggedInUi(false);
+    renderLogin();
+  }
+
+  function renderLogin(message="") {
+    setLoggedInUi(false);
+    const app = $("#app");
+    app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">🔒</div><div class="eyebrow">Закрытый семейный архив</div><h1>Вход</h1><p>Данные семейного древа доступны только приглашённым пользователям.</p>${message ? `<div class="auth-error">${esc(message)}</div>` : ""}<form class="auth-form" id="loginForm"><div class="auth-field"><label for="loginEmail">Email</label><input id="loginEmail" name="email" type="email" autocomplete="username" required></div><div class="auth-field"><label for="loginPassword">Пароль</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></div><button class="btn primary" id="loginSubmit" type="submit">Войти</button></form><p class="auth-note">Самостоятельная регистрация на сайте отключена. Доступ выдаётся владельцем семейного архива.</p></div></section>`;
+
+    $("#loginForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const button = $("#loginSubmit");
+      const email = $("#loginEmail").value.trim();
+      const password = $("#loginPassword").value;
+      button.disabled = true;
+      button.textContent = "Вход…";
+      try {
+        await signIn(email, password);
+        await enterAuthenticatedApp();
+      } catch (error) {
+        renderLogin(error.message);
+      }
+    };
+  }
+
+  function renderAccessPending() {
+    setLoggedInUi(true);
+    const app = $("#app");
+    app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">🔐</div><div class="eyebrow">Аккаунт подтверждён</div><h1>Доступ ещё не выдан</h1><p>Вход выполнен, но этот аккаунт пока не добавлен в список членов семейного архива.</p><button class="btn" id="pendingLogout" type="button">Выйти</button></div></section>`;
+    $("#pendingLogout").onclick = signOut;
+  }
+
+  async function api(path, options={}, retry=true) {
+    const token = await ensureAccessToken();
+    if (!token) {
+      await signOut();
+      throw new Error("Сессия истекла");
+    }
+
+    const headers = {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`
+    };
+    let r = await fetch(path, { ...options, headers });
+
+    if (r.status === 401 && retry && await refreshSession()) {
+      return api(path, options, false);
+    }
+
     if (!r.ok) {
       let msg = `${r.status}`;
       try { const j = await r.json(); msg = j.error || msg; } catch {}
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = r.status;
+      throw err;
     }
     return r.json();
   }
@@ -31,6 +197,10 @@
   }
 
   async function route() {
+    if (!authUser) {
+      renderLogin();
+      return;
+    }
     const raw = location.hash.slice(1) || '/tree';
     const [_, page, id] = raw.split('/');
     setActive(page || 'tree');
@@ -404,5 +574,44 @@
   function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
   $('#mobileNav').onclick=()=>$('.nav').classList.toggle('open');
   document.addEventListener('click',e=>{if(!e.target.closest('.topbar'))$('.nav').classList.remove('open')});
-  loadTree().then(()=>{addEventListener('hashchange',route);route();}).catch(e=>{ $('#app').innerHTML=`<section class="page"><div class="callout"><b>Не удалось подключиться к базе:</b> ${esc(e.message)}</div><p>Проверь переменные Netlify и RLS в Supabase.</p></section>`; });
+  async function enterAuthenticatedApp() {
+    setLoggedInUi(true);
+    try {
+      await loadTree();
+    } catch (error) {
+      if (error.status === 403) {
+        renderAccessPending();
+        return;
+      }
+      if (error.status === 401) {
+        await signOut();
+        return;
+      }
+      throw error;
+    }
+
+    if (!hashListenerInstalled) {
+      addEventListener("hashchange", route);
+      hashListenerInstalled = true;
+    }
+    if (!location.hash || location.hash === "#/login") location.hash = "#/tree";
+    await route();
+  }
+
+  $("#logoutBtn").onclick = signOut;
+
+  (async () => {
+    try {
+      await loadAuthConfig();
+      authSession = readStoredSession();
+      authUser = await validateSession();
+      if (!authUser) {
+        renderLogin();
+        return;
+      }
+      await enterAuthenticatedApp();
+    } catch (error) {
+      renderLogin(error.message || "Ошибка авторизации");
+    }
+  })();
 })();
