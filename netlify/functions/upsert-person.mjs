@@ -1,4 +1,4 @@
-import { supabaseForRequest, json, methodNotAllowed } from "./_supabase.mjs";
+import { supabaseForRequest, requireAuthorizedUser, json, methodNotAllowed } from "./_supabase.mjs";
 
 const allowedPersonFields = new Set([
   "slug", "first_name", "middle_name", "last_name", "maiden_name", "sex",
@@ -23,6 +23,8 @@ export default async (req) => {
 
   try {
     const db = supabaseForRequest(req);
+    const auth = await requireAuthorizedUser(db);
+    if (!auth.ok) return auth.response;
     const body = await req.json();
 
     const id = body.id ?? null;
