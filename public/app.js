@@ -321,16 +321,61 @@
   }
 
   async function renderPerson(app, id) {
-    const d = await api(`/.netlify/functions/person?id=${encodeURIComponent(id)}`);
-    const p = d.person;
-    const rels = (d.relationships||[]).map(r => {
-      const otherId = r.person_a_id === p.id ? r.person_b_id : r.person_a_id;
-      return {r, other: peopleMap.get(otherId)};
+    let d;
+    try {
+      d = await api(`/.netlify/functions/person?id=${encodeURIComponent(id)}`);
+    } catch (error) {
+      // Never leave a clicked relative on an empty page: the tree payload
+      // already contains enough public data for a basic card.
+      const basic = peopleMap.get(id);
+      if (!basic) throw error;
+      d = {
+        person: basic,
+        relationships: relationships.filter(r => r.person_a_id === id || r.person_b_id === id),
+        events: [],
+        sources: [],
+        claims: [],
+        media: []
+      };
+    }
+
+    const p=d.person;
+    const rels=(d.relationships||[]).map(r=>{
+      const otherId=r.person_a_id===p.id ? r.person_b_id : r.person_a_id;
+      return {r,other:peopleMap.get(otherId)};
     }).filter(x=>x.other);
-    const eventHtml = (d.events||[]).map(e=>`<div class="research-item"><b>${esc(e.event_type)}</b><div>${esc(e.date_display||e.date_from||'')}</div><div class="small">${esc(e.place||'')}</div>${e.description?`<div>${esc(e.description)}</div>`:''}</div>`).join('');
-    const srcs = (d.sources||[]).map(x=>x.source).filter(Boolean);
-    const claims = (d.claims||[]).map(c=>`<div class="research-item"><b>${esc(c.predicate)}</b><div>${esc(c.value_text||c.note||'')}</div><div class="small">Достоверность: ${esc(c.confidence)}</div></div>`).join('');
-    app.innerHTML = `<section class="page"><a class="backlink" href="#/tree">← Вернуться к древу</a><div class="page-head"><div><div class="eyebrow">Карточка человека</div><h1>${esc(fullName(p))}</h1></div><span class="status-pill ${statusClass(p)}">${statusText(p)}</span></div><div class="grid"><article class="card span-7"><h2>Что известно</h2>${p.biography?`<p>${esc(p.biography)}</p>`:'<p class="muted">Биография пока не заполнена.</p>'}</article><aside class="card span-5"><h2>Карточка</h2><dl class="kv"><dt>Рождение</dt><dd>${esc(p.birth_display||'не установлено')}</dd><dt>Место рождения</dt><dd>${esc(p.birth_place||'не установлено')}</dd><dt>Смерть</dt><dd>${esc(p.death_display||'нет данных')}</dd><dt>Место смерти</dt><dd>${esc(p.death_place||'нет данных')}</dd></dl></aside><article class="card span-6"><h2>Связи</h2><div class="relation-list">${rels.length?rels.map(({r,other})=>`<a class="relation-item" href="#/person/${other.id}"><b>${esc(fullName(other))}</b><div class="small">${esc(r.relationship_type)} · ${esc(r.confidence)}</div></a>`).join(''):'<div class="muted">Связи не внесены.</div>'}</div></article><article class="card span-6"><h2>События</h2>${eventHtml||'<div class="muted">События пока не внесены.</div>'}</article><article class="card span-12"><h2>Гипотезы / claims</h2>${claims||'<div class="muted">Нет активных гипотез.</div>'}</article><article class="card span-12"><h2>Источники</h2><div class="source-list">${srcs.length?srcs.map(s=>`<div class="source-item"><div class="small">${esc(s.source_type||'Источник')}</div>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`:`<b>${esc(s.title)}</b>`}${s.archive_name?`<div class="small">${esc([s.archive_name,s.fond,s.inventory,s.file_number].filter(Boolean).join(' · '))}</div>`:''}</div>`).join(''):'<div class="muted">Источники пока не привязаны.</div>'}</div></article></div></section>`;
+
+    const relationLabel=(r,other)=>{
+      if(r.relationship_type==='spouse_of') return 'супруг(а)';
+      if(r.relationship_type==='parent_of'){
+        return r.person_a_id===p.id ? 'ребёнок' : 'родитель';
+      }
+      return r.relationship_type;
+    };
+
+    const eventHtml=(d.events||[]).map(e=>`<div class="research-item"><b>${esc(e.event_type)}</b><div>${esc(e.date_display||e.date_from||'')}</div><div class="small">${esc(e.place||'')}</div>${e.description?`<div>${esc(e.description)}</div>`:''}</div>`).join('');
+
+    const srcs=(d.sources||[])
+      .flatMap(x=>Array.isArray(x.source)?x.source:[x.source])
+      .filter(Boolean);
+
+    const claims=(d.claims||[]).map(cl=>`<div class="research-item"><b>${esc(cl.predicate)}</b><div>${esc(cl.value_text||cl.note||'')}</div><div class="small">Достоверность: ${esc(cl.confidence)}</div></div>`).join('');
+
+    const generation = Number.isInteger(p.generation) ? p.generation : generationOf(p);
+    const lineage = p.lineage_path || 'центральная ветвь';
+
+    app.innerHTML=`<section class="page">
+      <a class="backlink" href="#/tree">← Вернуться к древу</a>
+      <div class="page-head"><div><div class="eyebrow">Карточка человека</div><h1>${esc(fullName(p))}</h1><div class="chip-row"><span class="chip">Поколение ${generation}</span><span class="chip">Ветвь: ${esc(lineage)}</span></div></div><span class="status-pill ${statusClass(p)}">${statusText(p)}</span></div>
+      <div class="grid">
+        <article class="card span-7"><h2>Что известно</h2>${p.biography?`<p>${esc(p.biography)}</p>`:'<p class="muted">Биография пока не заполнена.</p>'}</article>
+        <aside class="card span-5"><h2>Карточка</h2><dl class="kv"><dt>Рождение</dt><dd>${esc(p.birth_display||'не установлено')}</dd><dt>Место рождения</dt><dd>${esc(p.birth_place||'не установлено')}</dd><dt>Смерть</dt><dd>${esc(p.death_display||'нет данных')}</dd><dt>Место смерти</dt><dd>${esc(p.death_place||'нет данных')}</dd></dl></aside>
+        <article class="card span-6"><h2>Семейные связи</h2><div class="relation-list">${rels.length?rels.map(({r,other})=>`<a class="relation-item" href="#/person/${other.id}"><b>${esc(fullName(other))}</b><div class="small">${esc(relationLabel(r,other))} · ${esc(r.confidence)}</div></a>`).join(''):'<div class="muted">Связи не внесены.</div>'}</div></article>
+        <article class="card span-6"><h2>События</h2>${eventHtml||'<div class="muted">События пока не внесены.</div>'}</article>
+        <article class="card span-12"><h2>Гипотезы</h2>${claims||'<div class="muted">Нет активных гипотез.</div>'}</article>
+        <article class="card span-12"><h2>Источники</h2><div class="source-list">${srcs.length?srcs.map(s=>`<div class="source-item"><div class="small">${esc(s.source_type||'Источник')}</div>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`:`<b>${esc(s.title)}</b>`}${s.archive_name?`<div class="small">${esc([s.archive_name,s.fond,s.inventory,s.file_number].filter(Boolean).join(' · '))}</div>`:''}</div>`).join(''):'<div class="muted">Источники пока не привязаны.</div>'}</div></article>
+      </div>
+    </section>`;
   }
 
   function renderAbout(app) {
