@@ -18,7 +18,8 @@ export default async (req) => {
       .select(`
         id, slug, first_name, middle_name, last_name, maiden_name, sex,
         birth_display, death_display, birth_place, death_place, biography,
-        is_living, privacy_level, confidence, information_level
+        is_living, privacy_level, confidence, information_level,
+        generation, lineage_path
       `);
 
     personQuery = id ? personQuery.eq("id", id) : personQuery.eq("slug", slug);
@@ -111,17 +112,16 @@ export default async (req) => {
       mediaResult,
     ];
 
-    const firstError = results.find((r) => r.error)?.error;
-    if (firstError) throw firstError;
-
+    // A public person page must still render even when an optional
+    // family/private relation is hidden by RLS.
     return json({
       person,
-      private: privateResult.data ?? null,
-      relationships: relationsResult.data ?? [],
-      events: eventsResult.data ?? [],
-      sources: sourcesResult.data ?? [],
-      claims: claimsResult.data ?? [],
-      media: mediaResult.data ?? [],
+      private: privateResult.error ? null : (privateResult.data ?? null),
+      relationships: relationsResult.error ? [] : (relationsResult.data ?? []),
+      events: eventsResult.error ? [] : (eventsResult.data ?? []),
+      sources: sourcesResult.error ? [] : (sourcesResult.data ?? []),
+      claims: claimsResult.error ? [] : (claimsResult.data ?? []),
+      media: mediaResult.error ? [] : (mediaResult.data ?? []),
     });
   } catch (error) {
     console.error(error);
