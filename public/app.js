@@ -3,7 +3,7 @@
   const $$ = (s, el=document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
   let people = [], relationships = [], peopleMap = new Map();
-  let authConfig = null, authSession = null, authUser = null;
+  let authConfig = null, authSession = null, authUser = null, viewer = null;
   let hashListenerInstalled = false;
   const SESSION_KEY = "makov-family-session";
 
@@ -110,6 +110,38 @@
     authUser = data.user || null;
   }
 
+  async function signUp(email, password, displayName) {
+    const r = await authRest("/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password,
+        data: { display_name: displayName }
+      })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      throw new Error(data.msg || data.error_description || "Не удалось создать аккаунт");
+    }
+    return data;
+  }
+
+  async function submitAccessRequest(userId, email, displayName, message) {
+    const r = await fetch("/.netlify/functions/request-access", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        email,
+        display_name: displayName,
+        message
+      })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "Не удалось отправить заявку");
+    return data;
+  }
+
   async function signOut() {
     const token = authSession?.access_token;
     if (token) {
@@ -123,6 +155,7 @@
     }
     saveSession(null);
     authUser = null;
+    viewer = null;
     people = [];
     relationships = [];
     peopleMap = new Map();
@@ -133,7 +166,7 @@
   function renderLogin(message="") {
     setLoggedInUi(false);
     const app = $("#app");
-    app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">🔒</div><div class="eyebrow">Закрытый семейный архив</div><h1>Вход</h1><p>Данные семейного древа доступны только приглашённым пользователям.</p>${message ? `<div class="auth-error">${esc(message)}</div>` : ""}<form class="auth-form" id="loginForm"><div class="auth-field"><label for="loginEmail">Email</label><input id="loginEmail" name="email" type="email" autocomplete="username" required></div><div class="auth-field"><label for="loginPassword">Пароль</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></div><button class="btn primary" id="loginSubmit" type="submit">Войти</button></form><p class="auth-note">Самостоятельная регистрация на сайте отключена. Доступ выдаётся владельцем семейного архива.</p></div></section>`;
+    app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">🔒</div><div class="eyebrow">Закрытый семейный архив</div><h1>Вход</h1><p>Данные семейного древа доступны только пользователям, которым администратор выдал доступ.</p>${message ? `<div class="auth-error">${esc(message)}</div>` : ""}<form class="auth-form" id="loginForm"><div class="auth-field"><label for="loginEmail">Email</label><input id="loginEmail" name="email" type="email" autocomplete="username" required></div><div class="auth-field"><label for="loginPassword">Пароль</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></div><button class="btn primary" id="loginSubmit" type="submit">Войти</button></form><div class="auth-switch">Нет аккаунта? <button class="link-btn" id="showRegister" type="button">Подать заявку на доступ</button></div></div></section>`;
 
     $("#loginForm").onsubmit = async (e) => {
       e.preventDefault();
@@ -147,6 +180,49 @@
         await enterAuthenticatedApp();
       } catch (error) {
         renderLogin(error.message);
+      }
+    };
+    $("#showRegister").onclick = () => renderRegister();
+  }
+
+  function renderRegister(message="", success=false) {
+    setLoggedInUi(false);
+    const app = $("#app");
+    if (success) {
+      app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">✓</div><div class="eyebrow">Заявка отправлена</div><h1>Ждём подтверждения</h1><p>Аккаунт создан, а администратор получил заявку на доступ. После одобрения можно будет войти через обычную форму. Если Supabase попросил подтвердить email, сначала перейдите по ссылке из письма.</p><button class="btn primary" id="backToLogin" type="button">К входу</button></div></section>`;
+      $("#backToLogin").onclick = () => renderLogin();
+      return;
+    }
+
+    app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">✉</div><div class="eyebrow">Регистрация</div><h1>Запросить доступ</h1><p>Создайте аккаунт и коротко напишите, кто вы. Доступ к дереву появится только после одобрения администратором.</p>${message ? `<div class="auth-error">${esc(message)}</div>` : ""}<form class="auth-form" id="registerForm"><div class="auth-field"><label for="registerName">Имя</label><input id="registerName" type="text" autocomplete="name" maxlength="120" required></div><div class="auth-field"><label for="registerEmail">Email</label><input id="registerEmail" type="email" autocomplete="email" required></div><div class="auth-field"><label for="registerPassword">Пароль</label><input id="registerPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="auth-field"><label for="registerPassword2">Повторите пароль</label><input id="registerPassword2" type="password" autocomplete="new-password" minlength="8" required></div><div class="auth-field"><label for="registerMessage">Кто вы / как связаны с семьёй</label><textarea id="registerMessage" rows="4" maxlength="1000" placeholder="Например: двоюродный брат по линии Зиновьевых"></textarea></div><button class="btn primary" id="registerSubmit" type="submit">Создать аккаунт и отправить заявку</button></form><div class="auth-switch">Уже есть аккаунт? <button class="link-btn" id="showLogin" type="button">Войти</button></div></div></section>`;
+
+    $("#showLogin").onclick = () => renderLogin();
+    $("#registerForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const displayName = $("#registerName").value.trim();
+      const email = $("#registerEmail").value.trim();
+      const password = $("#registerPassword").value;
+      const password2 = $("#registerPassword2").value;
+      const messageText = $("#registerMessage").value.trim();
+      if (password !== password2) {
+        renderRegister("Пароли не совпадают");
+        return;
+      }
+
+      const button = $("#registerSubmit");
+      button.disabled = true;
+      button.textContent = "Создание аккаунта…";
+
+      try {
+        const data = await signUp(email, password, displayName);
+        const user = data.user;
+        if (!user?.id || (Array.isArray(user.identities) && user.identities.length === 0)) {
+          throw new Error("Такой аккаунт уже может существовать. Попробуйте войти или используйте другой email.");
+        }
+        await submitAccessRequest(user.id, email, displayName, messageText);
+        renderRegister("", true);
+      } catch (error) {
+        renderRegister(error.message);
       }
     };
   }
@@ -189,7 +265,10 @@
     const data = await api('/.netlify/functions/tree');
     people = data.people || [];
     relationships = data.relationships || [];
+    viewer = data.viewer || null;
     peopleMap = new Map(people.map(p => [p.id, p]));
+    const accessNav = $("#accessNav");
+    if (accessNav) accessNav.hidden = viewer?.role !== "admin";
   }
 
   function setActive(page) {
@@ -210,6 +289,10 @@
       if ((page || 'tree') === 'tree') renderTree(app);
       else if (page === 'person') await renderPerson(app, id);
       else if (page === 'about') renderAbout(app);
+      else if (page === 'access') {
+        if (viewer?.role !== "admin") location.hash = '#/tree';
+        else await renderAccessRequests(app);
+      }
       else location.hash = '#/tree';
     } catch (e) {
       app.innerHTML = `<section class="page"><div class="callout"><b>Ошибка загрузки:</b> ${esc(e.message)}</div><p class="muted">Проверь переменные SUPABASE_URL и SUPABASE_PUBLISHABLE_KEY в Netlify и права RLS в Supabase.</p></section>`;
@@ -567,6 +650,78 @@
     </section>`;
   }
 
+  async function fetchAccessRequests(status="pending") {
+    return api(`/.netlify/functions/admin-access-requests?status=${encodeURIComponent(status)}`);
+  }
+
+  async function refreshAccessBadge(showToast=false) {
+    const nav=$("#accessNav");
+    const badge=$("#accessBadge");
+    if (!nav || viewer?.role !== "admin") return;
+    nav.hidden=false;
+    try {
+      const data=await fetchAccessRequests("pending");
+      const requests=data.requests || [];
+      badge.textContent=String(requests.length);
+      badge.hidden=requests.length===0;
+      if (showToast && requests.length) {
+        const who=requests[0].display_name || requests[0].email;
+        toast(requests.length===1 ? `Новая заявка на доступ: ${who}` : `Заявок на доступ: ${requests.length}`);
+      }
+    } catch {}
+  }
+
+  async function reviewAccessRequest(requestId, decision, role, note="") {
+    return api("/.netlify/functions/admin-access-requests", {
+      method:"POST",
+      headers:{ "content-type":"application/json" },
+      body:JSON.stringify({
+        request_id: requestId,
+        decision,
+        role,
+        note
+      })
+    });
+  }
+
+  async function renderAccessRequests(app) {
+    const data=await fetchAccessRequests("all");
+    const requests=data.requests || [];
+    const pending=requests.filter(r=>r.status==="pending");
+    app.innerHTML=`<section class="page"><div class="page-head"><div><div class="eyebrow">Администрирование</div><h1>Заявки на доступ</h1><p class="muted">Новые пользователи не видят семейные данные до явного одобрения администратором.</p></div><span class="meta-chip">${pending.length} ожидают</span></div><div class="access-list">${requests.length ? requests.map(r=>`<article class="card access-request ${r.status}"><div class="access-request-main"><div><div class="eyebrow">${esc(r.status==="pending" ? "Ожидает решения" : r.status==="approved" ? "Одобрено" : "Отклонено")}</div><h2>${esc(r.display_name || r.email)}</h2><div class="small">${esc(r.email)} · ${new Date(r.requested_at).toLocaleString("ru-RU")}</div>${r.message ? `<p>${esc(r.message)}</p>` : '<p class="muted">Комментарий не оставлен.</p>'}</div>${r.status==="pending" ? `<div class="access-actions"><label>Роль<select data-role="${r.id}"><option value="reader">Reader — только чтение</option><option value="editor">Editor — чтение и редактирование</option><option value="admin">Admin — полный доступ</option></select></label><textarea data-note="${r.id}" rows="2" placeholder="Комментарий админа (необязательно)"></textarea><div class="access-action-row"><button class="btn primary" data-approve="${r.id}">Одобрить</button><button class="btn danger" data-reject="${r.id}">Отклонить</button></div></div>` : `<div class="access-result"><b>${r.status==="approved" ? `Роль: ${esc(r.assigned_role || "reader")}` : "Доступ не выдан"}</b>${r.review_note ? `<div class="small">${esc(r.review_note)}</div>` : ""}</div>`}</div></article>`).join("") : '<div class="empty">Заявок пока нет.</div>'}</div></section>`;
+
+    $$("[data-approve]",app).forEach(btn=>btn.onclick=async()=>{
+      const id=btn.dataset.approve;
+      const role=$(`[data-role="${id}"]`,app).value;
+      const note=$(`[data-note="${id}"]`,app).value;
+      btn.disabled=true;
+      try {
+        await reviewAccessRequest(id,"approved",role,note);
+        toast("Доступ выдан");
+        await refreshAccessBadge();
+        await renderAccessRequests(app);
+      } catch(e) {
+        toast(e.message);
+        btn.disabled=false;
+      }
+    });
+
+    $$("[data-reject]",app).forEach(btn=>btn.onclick=async()=>{
+      const id=btn.dataset.reject;
+      const note=$(`[data-note="${id}"]`,app).value;
+      btn.disabled=true;
+      try {
+        await reviewAccessRequest(id,"rejected","reader",note);
+        toast("Заявка отклонена");
+        await refreshAccessBadge();
+        await renderAccessRequests(app);
+      } catch(e) {
+        toast(e.message);
+        btn.disabled=false;
+      }
+    });
+  }
+
   function renderAbout(app) {
     app.innerHTML = `<section class="page"><div class="eyebrow">Архитектура</div><h1>Supabase + Netlify</h1><div class="grid"><article class="card span-6"><h2>Данные</h2><p>Люди, связи, события, источники, гипотезы и медиа хранятся в Supabase. Доступ регулируется Row Level Security.</p></article><article class="card span-6"><h2>Сайт</h2><p>Netlify отдаёт статический интерфейс и серверные функции. Функции обращаются к Supabase с publishable key, поэтому RLS остаётся главным уровнем защиты.</p></article></div></section>`;
   }
@@ -595,6 +750,7 @@
       hashListenerInstalled = true;
     }
     if (!location.hash || location.hash === "#/login") location.hash = "#/tree";
+    await refreshAccessBadge(true);
     await route();
   }
 
