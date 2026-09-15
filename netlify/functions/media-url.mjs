@@ -1,10 +1,12 @@
-import { supabaseForRequest, json, methodNotAllowed } from "./_supabase.mjs";
+import { supabaseForRequest, requireAuthorizedUser, json, methodNotAllowed } from "./_supabase.mjs";
 
 export default async (req) => {
   if (req.method !== "GET") return methodNotAllowed(["GET"]);
 
   try {
     const db = supabaseForRequest(req);
+    const auth = await requireAuthorizedUser(db);
+    if (!auth.ok) return auth.response;
     const url = new URL(req.url);
     const mediaId = url.searchParams.get("id");
 
@@ -18,11 +20,6 @@ export default async (req) => {
 
     if (error) throw error;
     if (!media) return json({ error: "Media not found or not visible" }, 404);
-
-    if (media.bucket === "genealogy-public") {
-      const { data } = db.storage.from(media.bucket).getPublicUrl(media.object_path);
-      return json({ url: data.publicUrl, expires_in: null });
-    }
 
     const { data, error: signedError } = await db.storage
       .from(media.bucket)
