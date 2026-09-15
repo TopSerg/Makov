@@ -47,88 +47,168 @@
     app.focus();
   }
 
-  function inferGenerations() {
-    const parentEdges = relationships.filter(r => r.relationship_type === 'parent_of');
-    const parents = new Map(), children = new Map();
-    for (const p of people) { parents.set(p.id, []); children.set(p.id, []); }
-    for (const r of parentEdges) {
-      if (!peopleMap.has(r.person_a_id) || !peopleMap.has(r.person_b_id)) continue;
-      parents.get(r.person_b_id).push(r.person_a_id);
-      children.get(r.person_a_id).push(r.person_b_id);
+  function generationOf(p) {
+    if (Number.isInteger(p.generation)) return p.generation;
+    const m = String(p.birth_display || '').match(/(18|19|20)\\d{2}/);
+    if (!m) return 0;
+    const year = Number(m[0]);
+    return Math.max(0, Math.min(8, Math.round((2002 - year) / 26)));
+  }
+
+  function generationTitle(g) {
+    const titles = {
+      0: 'Поколение 0 · мы и двоюродные',
+      1: 'Поколение 1 · родители',
+      2: 'Поколение 2 · бабушки и дедушки',
+      3: 'Поколение 3 · прабабушки и прадедушки',
+      4: 'Поколение 4',
+      5: 'Поколение 5',
+      6: 'Поколение 6'
+    };
+    return titles[g] || `Поколение ${g}`;
+  }
+
+  function branchCenter(path) {
+    if (!path) return 0;
+    let left = -4200, right = 4200;
+    for (const ch of path) {
+      const mid = (left + right) / 2;
+      if (ch === 'P') right = mid;
+      else if (ch === 'M') left = mid;
     }
-    const roots = people.filter(p => (parents.get(p.id) || []).length === 0).map(p => p.id);
-    const level = new Map();
-    const q = roots.map(id => [id, 0]);
-    while (q.length) {
-      const [id, l] = q.shift();
-      if (level.has(id) && level.get(id) >= l) continue;
-      level.set(id, l);
-      for (const c of children.get(id) || []) q.push([c, l + 1]);
-    }
-    for (const p of people) if (!level.has(p.id)) level.set(p.id, 0);
-    return level;
+    return (left + right) / 2;
   }
 
   function renderTree(app) {
-    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Нажмите на человека, чтобы открыть карточку. Жёлтым отмечены родственники, о которых мало данных; красным — неподтверждённые.</p></div><div class="meta-chip">${people.length} записей</div></section>
+    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая горизонтальная строка — одно поколение. Отцовская и материнская линии разведены по разным секторам; внутри них ветви родителей также разделяются.</p></div><div class="meta-chip">${people.length} записей</div></section>
       <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button><label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>мало сведений</span><span><i class="dot unconfirmed"></i>не подтверждено</span></div></div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
 
     const svg = $('.tree-svg'), scene = $('#scene'), vp = $('#treeViewport');
-    const levels = inferGenerations();
-    const W=230, H=82, XS=270, YS=165;
+    const W=230, H=82, YS=170, CLUSTER_GAP=245;
+    const allGenerations = people.map(generationOf);
+    const maxGen = Math.max(0, ...allGenerations);
     let scale=.8, tx=vp.clientWidth/2, ty=90, dragging=false, last={x:0,y:0};
 
-    function visiblePeople() { return people.filter(p => $('#showCandidates').checked || p.confidence !== 'unconfirmed'); }
+    function visiblePeople() {
+      return people.filter(p => $('#showCandidates').checked || p.confidence !== 'unconfirmed');
+    }
+
     function layout() {
-      const byLevel = new Map();
+      const groups = new Map();
       for (const p of visiblePeople()) {
-        const l = levels.get(p.id) || 0;
-        if (!byLevel.has(l)) byLevel.set(l, []);
-        byLevel.get(l).push(p);
+        const g = generationOf(p);
+        const path = p.lineage_path || '';
+        const key = `${g}|${path}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(p);
       }
+
       const pos = new Map();
-      [...byLevel.entries()].sort((a,b)=>a[0]-b[0]).forEach(([l, arr]) => {
+      for (const [key, arr] of groups) {
+        const [gRaw, path] = key.split('|');
+        const g = Number(gRaw);
         arr.sort((a,b)=>fullName(a).localeCompare(fullName(b), 'ru'));
-        const offset = -((arr.length-1)*XS)/2;
-        arr.forEach((p,i)=>pos.set(p.id,{x:offset+i*XS,y:l*YS}));
-      });
+        const center = branchCenter(path);
+        const offset = -((arr.length - 1) * CLUSTER_GAP) / 2;
+        arr.forEach((p,i) => pos.set(p.id, {
+          x: center + offset + i * CLUSTER_GAP,
+          y: (maxGen - g) * YS,
+          generation: g,
+          path
+        }));
+      }
       return pos;
     }
+
     function apply(){ scene.setAttribute('transform', `translate(${tx} ${ty}) scale(${scale})`); }
     function trunc(s,n){ s=String(s||''); return esc(s.length>n ? s.slice(0,n-1)+'…' : s); }
+
     function draw(focus='') {
       const pos = layout();
       const ids = new Set([...pos.keys()]);
+      if (!pos.size) { scene.innerHTML=''; return; }
+
+      const ps=[...pos.values()];
+      const minX=Math.min(...ps.map(p=>p.x-W/2))-360;
+      const maxX=Math.max(...ps.map(p=>p.x+W/2))+180;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-80;
+      const maxY=Math.max(...ps.map(p=>p.y+H/2))+80;
+
+      const generations=[...new Set(ps.map(p=>p.generation))].sort((a,b)=>b-a);
+      const rows = generations.map(g => {
+        const y=(maxGen-g)*YS;
+        return `<g class="generation-guide"><line x1="${minX}" y1="${y+H/2+43}" x2="${maxX}" y2="${y+H/2+43}"/><text x="${minX+8}" y="${y-H/2-18}">${esc(generationTitle(g))}</text></g>`;
+      }).join('');
+
+      const mainDivider = `
+        <g class="branch-guides">
+          <line class="branch-divider main" x1="0" y1="${minY}" x2="0" y2="${maxY}"/>
+          <text class="branch-title paternal" x="-2100" y="${minY+24}">ОТЦОВСКАЯ ВЕТВЬ</text>
+          <text class="branch-title maternal" x="2100" y="${minY+24}">МАТЕРИНСКАЯ ВЕТВЬ</text>
+          <line class="branch-divider secondary" x1="-2100" y1="${minY+45}" x2="-2100" y2="${(maxGen-2)*YS+H/2+42}"/>
+          <line class="branch-divider secondary" x1="2100" y1="${minY+45}" x2="2100" y2="${(maxGen-2)*YS+H/2+42}"/>
+        </g>`;
+
       const edgeHtml = relationships.filter(r => ids.has(r.person_a_id) && ids.has(r.person_b_id)).map(r => {
         const a=pos.get(r.person_a_id), b=pos.get(r.person_b_id); if(!a||!b) return '';
         const un = r.confidence === 'unconfirmed' ? 'unconfirmed' : '';
-        if (r.relationship_type === 'spouse_of') return `<path class="edge spouse ${un}" d="M ${a.x+W/2} ${a.y} L ${b.x-W/2} ${b.y}"/>`;
+        if (r.relationship_type === 'spouse_of') {
+          return `<path class="edge spouse ${un}" d="M ${a.x+W/2} ${a.y} L ${b.x-W/2} ${b.y}"/>`;
+        }
         if (r.relationship_type !== 'parent_of') return '';
         const y1=a.y+H/2, y2=b.y-H/2, mid=(y1+y2)/2;
         return `<path class="edge ${un}" d="M ${a.x} ${y1} C ${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${y2}"/>`;
       }).join('');
+
       const nodeHtml = visiblePeople().map(p => {
         const q=pos.get(p.id), st=statusClass(p);
-        return `<g class="node ${st} ${p.id===focus?'focused':''}" data-id="${p.id}" transform="translate(${q.x-W/2},${q.y-H/2})"><rect rx="14" width="${W}" height="${H}"/><text class="name" x="14" y="24">${trunc(fullName(p),28)}</text><text class="sub" x="14" y="45">${trunc(years(p)||p.birth_place||'',31)}</text><text class="tag" x="14" y="66">${trunc(statusText(p),28)}</text></g>`;
+        const branch = p.lineage_path ? ` · ${p.lineage_path}` : '';
+        return `<g class="node ${st} ${p.id===focus?'focused':''}" data-id="${p.id}" transform="translate(${q.x-W/2},${q.y-H/2})"><rect rx="14" width="${W}" height="${H}"/><text class="name" x="14" y="24">${trunc(fullName(p),28)}</text><text class="sub" x="14" y="45">${trunc(years(p)||p.birth_place||'',31)}</text><text class="tag" x="14" y="66">${trunc(`Поколение ${generationOf(p)}${branch}`,28)}</text></g>`;
       }).join('');
-      scene.innerHTML=edgeHtml+nodeHtml;
+
+      scene.innerHTML=rows+mainDivider+edgeHtml+nodeHtml;
       $$('.node', scene).forEach(n=>n.onclick=()=>location.hash=`#/person/${n.dataset.id}`);
       apply();
     }
+
     function fit() {
       const pos=layout(); if(!pos.size) return;
-      const ps=[...pos.values()]; const minX=Math.min(...ps.map(p=>p.x-W/2)), maxX=Math.max(...ps.map(p=>p.x+W/2)), minY=Math.min(...ps.map(p=>p.y-H/2)), maxY=Math.max(...ps.map(p=>p.y+H/2));
+      const ps=[...pos.values()];
+      const minX=Math.min(...ps.map(p=>p.x-W/2))-380, maxX=Math.max(...ps.map(p=>p.x+W/2))+220;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-100, maxY=Math.max(...ps.map(p=>p.y+H/2))+100;
       const bw=Math.max(1,maxX-minX), bh=Math.max(1,maxY-minY);
       scale=Math.min((vp.clientWidth-70)/bw,(vp.clientHeight-70)/bh,1);
-      tx=vp.clientWidth/2-(minX+maxX)/2*scale; ty=vp.clientHeight/2-(minY+maxY)/2*scale; apply();
+      tx=vp.clientWidth/2-(minX+maxX)/2*scale;
+      ty=vp.clientHeight/2-(minY+maxY)/2*scale;
+      apply();
     }
-    function center(id) { const p=peopleMap.get(id); if(!p) return; const q=layout().get(id); if(!q) return; scale=Math.max(scale,.95); tx=vp.clientWidth/2-q.x*scale; ty=vp.clientHeight/2-q.y*scale; draw(id); }
-    svg.addEventListener('wheel', e=>{e.preventDefault(); const rect=svg.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top, old=scale; scale=Math.max(.28,Math.min(2.2,scale*(e.deltaY<0?1.1:.9))); tx=mx-(mx-tx)*(scale/old); ty=my-(my-ty)*(scale/old); apply();},{passive:false});
-    vp.addEventListener('pointerdown',e=>{if(e.target.closest('.node'))return;dragging=true;last={x:e.clientX,y:e.clientY};vp.setPointerCapture(e.pointerId)});
+
+    function center(id) {
+      const p=peopleMap.get(id); if(!p) return;
+      const q=layout().get(id); if(!q) return;
+      scale=Math.max(scale,.95);
+      tx=vp.clientWidth/2-q.x*scale;
+      ty=vp.clientHeight/2-q.y*scale;
+      draw(id);
+    }
+
+    svg.addEventListener('wheel', e=>{
+      e.preventDefault();
+      const rect=svg.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top, old=scale;
+      scale=Math.max(.28,Math.min(2.2,scale*(e.deltaY<0?1.1:.9)));
+      tx=mx-(mx-tx)*(scale/old); ty=my-(my-ty)*(scale/old); apply();
+    },{passive:false});
+    vp.addEventListener('pointerdown',e=>{if(e.target.closest('.node'))return;dragging=true;last={x:e.clientX,y:e.clientY};vp.setPointerCapture(e.pointerId);vp.classList.add('dragging')});
     vp.addEventListener('pointermove',e=>{if(!dragging)return;tx+=e.clientX-last.x;ty+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};apply();});
-    vp.addEventListener('pointerup',()=>dragging=false);
-    $('#fitTree').onclick=fit; $('#showCandidates').onchange=()=>{draw();fit();};
-    $('#treeSearch').oninput=e=>{const q=e.target.value.trim().toLowerCase(); if(!q){draw();return;} const p=visiblePeople().find(x=>fullName(x).toLowerCase().includes(q)); if(p) center(p.id);};
+    vp.addEventListener('pointerup',()=>{dragging=false;vp.classList.remove('dragging')});
+    $('#fitTree').onclick=fit;
+    $('#showCandidates').onchange=()=>{draw();fit();};
+    $('#treeSearch').oninput=e=>{
+      const q=e.target.value.trim().toLowerCase();
+      if(!q){draw();return;}
+      const p=visiblePeople().find(x=>fullName(x).toLowerCase().includes(q));
+      if(p) center(p.id);
+    };
     draw(); setTimeout(fit,0);
   }
 
