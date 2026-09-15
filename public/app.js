@@ -151,6 +151,13 @@
       for(const [g, arr] of byGeneration){
         for(const members of coupleComponents(arr)){
           members.sort((a,b)=>{
+            const ao=Number.isFinite(a.layout_order) ? a.layout_order : null;
+            const bo=Number.isFinite(b.layout_order) ? b.layout_order : null;
+            if(ao!==null || bo!==null){
+              if(ao===null) return 1;
+              if(bo===null) return -1;
+              if(ao!==bo) return ao-bo;
+            }
             const sexRank = x => x.sex==='male' ? 0 : x.sex==='female' ? 1 : 2;
             return sexRank(a)-sexRank(b) || fullName(a).localeCompare(fullName(b),'ru');
           });
@@ -177,7 +184,19 @@
       for(const [key, groupUnits] of groups){
         const [gRaw,path]=key.split('|');
         const g=Number(gRaw);
-        groupUnits.sort((a,b)=>fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru'));
+        groupUnits.sort((a,b)=>{
+          const orderOf = unit => {
+            const values=unit.members.map(p=>p.layout_order).filter(Number.isFinite);
+            return values.length ? Math.min(...values) : null;
+          };
+          const ao=orderOf(a), bo=orderOf(b);
+          if(ao!==null || bo!==null){
+            if(ao===null) return 1;
+            if(bo===null) return -1;
+            if(ao!==bo) return ao-bo;
+          }
+          return fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru');
+        });
 
         const widths=groupUnits.map(u=>u.members.length*W+(u.members.length-1)*PERSON_GAP);
         const totalWidth=widths.reduce((s,x)=>s+x,0)+Math.max(0,groupUnits.length-1)*UNIT_GAP;
