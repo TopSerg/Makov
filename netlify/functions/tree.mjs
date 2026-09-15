@@ -34,6 +34,11 @@ export default async (req) => {
     return json({
       people: peopleResult.data ?? [],
       relationships: relationsResult.data ?? [],
+      viewer: {
+        email: auth.user.email ?? null,
+        display_name: auth.profile.display_name ?? null,
+        role: auth.profile.role
+      }
     });
   } catch (error) {
     console.error(error);
