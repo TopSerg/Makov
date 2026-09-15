@@ -4,7 +4,7 @@ const allowedPersonFields = new Set([
   "slug", "first_name", "middle_name", "last_name", "maiden_name", "sex",
   "birth_display", "death_display", "birth_place", "death_place", "biography",
   "is_living", "privacy_level", "confidence", "information_level",
-  "generation", "lineage_path"
+  "generation", "lineage_path", "layout_order"
 ]);
 
 const allowedPrivateFields = new Set([
