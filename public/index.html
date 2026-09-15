@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="Интерактивное генеалогическое древо семьи Маковых" />
+  <title>Семейное древо Маковых</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/tree" aria-label="К древу">
+      <span class="brand-mark">М</span><span><b>Маковы</b><small>семейный архив</small></span>
+    </a>
+    <nav class="nav">
+      <a href="#/tree" data-nav="tree">Древо</a>
+      <a href="#/about" data-nav="about">О базе</a>
+    </nav>
+    <button class="icon-btn mobile-nav" id="mobileNav" aria-label="Меню">☰</button>
+  </header>
+  <main id="app" tabindex="-1"></main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
