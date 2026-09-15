@@ -15,3 +15,22 @@
 .auth-error{background:#fff0ee;border:1px solid #efc2bd;color:#8d322b;border-radius:12px;padding:10px 12px;font-size:13px}
 .auth-note{margin-top:16px!important;font-size:12px}
 .auth-user{font-size:12px;color:var(--muted);margin-left:auto}
+
+.nav-badge{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--red-b);color:white;font-size:11px;font-weight:800;margin-left:4px}
+.link-btn{border:0;background:none;padding:0;color:#275d47;text-decoration:underline;font:inherit;font-weight:750;cursor:pointer}
+.auth-switch{margin-top:18px;color:var(--muted);font-size:13px;text-align:center}
+.auth-field textarea,.access-actions textarea,.access-actions select{width:100%;border:1px solid var(--line);border-radius:12px;background:white;padding:10px 12px;font:inherit}
+.access-list{display:grid;gap:14px}
+.access-request{padding:0;overflow:hidden}
+.access-request-main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:20px;padding:20px}
+.access-request h2{margin:4px 0 6px}
+.access-request p{margin:12px 0 0}
+.access-actions{display:grid;gap:10px;align-content:start}
+.access-actions label{display:grid;gap:6px;font-size:13px;font-weight:700}
+.access-action-row{display:flex;gap:9px;flex-wrap:wrap}
+.btn.danger{border-color:#efb6b0;color:#97372f;background:#fff4f2}
+.btn.danger:hover{background:#ffe6e2}
+.access-request.approved{border-left:4px solid var(--green-b)}
+.access-request.rejected{border-left:4px solid var(--red-b)}
+.access-result{align-self:center;background:#f2eee5;border-radius:12px;padding:12px}
+@media(max-width:900px){.access-request-main{grid-template-columns:1fr}}
