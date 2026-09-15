@@ -216,8 +216,8 @@
       try {
         const data = await signUp(email, password, displayName);
         const user = data.user;
-        if (!user?.id || (Array.isArray(user.identities) && user.identities.length === 0)) {
-          throw new Error("Такой аккаунт уже может существовать. Попробуйте войти или используйте другой email.");
+        if (!user?.id) {
+          throw new Error("Supabase не вернул идентификатор нового пользователя.");
         }
         await submitAccessRequest(user.id, email, displayName, messageText);
         renderRegister("", true);
