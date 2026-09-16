@@ -2,14 +2,64 @@
   const $ = (s, el=document) => el.querySelector(s);
   const $$ = (s, el=document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
-  let people = [], relationships = [], peopleMap = new Map();
+  let people = [], relationships = [], peopleMap = new Map(), connectionConfidence = new Map();
   let authConfig = null, authSession = null, authUser = null, viewer = null;
   let hashListenerInstalled = false;
   const SESSION_KEY = "makov-family-session";
 
   const fullName = p => [p.last_name, p.first_name, p.middle_name].filter(Boolean).join(' ');
-  const statusClass = p => p.confidence === 'unconfirmed' ? 'unconfirmed' : (p.information_level === 'minimal' ? 'limited' : 'confirmed');
-  const statusText = p => statusClass(p) === 'unconfirmed' ? 'Неподтверждён' : statusClass(p) === 'limited' ? 'Мало информации' : 'Подтверждён';
+
+  function buildConnectionConfidence() {
+    const edgeRank = confidence => confidence === 'confirmed' ? 2 : confidence === 'probable' ? 1 : 0;
+    const graph = new Map(people.map(p => [p.id, []]));
+
+    for (const r of relationships) {
+      if (!graph.has(r.person_a_id) || !graph.has(r.person_b_id)) continue;
+      const rank = edgeRank(r.confidence);
+      graph.get(r.person_a_id).push([r.person_b_id, rank]);
+      graph.get(r.person_b_id).push([r.person_a_id, rank]);
+    }
+
+    const score = new Map();
+    const queue = [];
+    for (const p of people) {
+      if (p.generation === 0) {
+        score.set(p.id, 2);
+        queue.push(p.id);
+      }
+    }
+
+    while (queue.length) {
+      const id = queue.shift();
+      const current = score.get(id) ?? 0;
+      for (const [next, edge] of graph.get(id) || []) {
+        const candidate = Math.min(current, edge);
+        if (candidate > (score.get(next) ?? -1)) {
+          score.set(next, candidate);
+          queue.push(next);
+        }
+      }
+    }
+    return score;
+  }
+
+  function statusClass(p) {
+    if (p.confidence === 'unconfirmed') return 'unconfirmed';
+    const link = connectionConfidence.get(p.id);
+    if (link === 0) return 'unconfirmed';
+    if (p.confidence === 'probable' || link === 1 || p.information_level === 'minimal') return 'limited';
+    return 'confirmed';
+  }
+
+  function statusText(p) {
+    if (p.confidence === 'unconfirmed') return 'Личность не подтверждена';
+    const link = connectionConfidence.get(p.id);
+    if (link === 0) return 'Связь с древом не подтверждена';
+    if (p.confidence === 'probable' || link === 1) return 'Связь вероятна';
+    if (p.information_level === 'minimal') return 'Мало информации';
+    return 'Подтверждён';
+  }
+
   const years = p => [p.birth_display || '', p.death_display || ''].filter(Boolean).join(' — ');
 
   function readStoredSession() {
@@ -162,6 +212,7 @@
     people = [];
     relationships = [];
     peopleMap = new Map();
+    connectionConfidence = new Map();
     setLoggedInUi(false);
     renderLogin();
   }
@@ -270,6 +321,7 @@
     relationships = data.relationships || [];
     viewer = data.viewer || null;
     peopleMap = new Map(people.map(p => [p.id, p]));
+    connectionConfidence = buildConnectionConfidence();
     const accessNav = $("#accessNav");
     if (accessNav) accessNav.hidden = viewer?.role !== "admin";
   }
