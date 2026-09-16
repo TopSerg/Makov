@@ -15,7 +15,7 @@ export default async (req) => {
           id, slug, first_name, middle_name, last_name, maiden_name, sex,
           birth_display, death_display, birth_place, death_place,
           is_living, privacy_level, confidence, information_level,
-          generation, lineage_path, layout_order
+          generation, lineage_path, layout_order, layout_x
         `)
         .order("last_name", { ascending: true })
         .order("first_name", { ascending: true }),

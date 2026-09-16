@@ -81,3 +81,30 @@
 .edge.probable{stroke:#c99b19;stroke-dasharray:8 5}
 .branch-divider.candidate{stroke:#b8afa1;stroke-dasharray:4 8}
 .branch-title.candidate-title{fill:#8a8072}
+
+.answer-badge{background:#5d6d92}
+.research-branch-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:0 0 18px}
+.research-branch-card{appearance:none;text-align:left;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:15px;cursor:pointer;box-shadow:var(--shadow);color:var(--ink);font:inherit}
+.research-branch-card:hover{border-color:#aaa091}
+.research-branch-card.active{outline:3px solid rgba(40,59,50,.15);border-color:#728277}
+.research-branch-name{font:700 22px Georgia,serif;margin-bottom:4px}
+.branch-toolbar{grid-template-columns:minmax(240px,1.7fr) repeat(3,minmax(160px,.72fr))}
+.branch-progress{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:14px;background:#f2f4ee}
+.branch-progress h2{margin:2px 0 7px}
+.branch-progress p{margin:0;color:var(--muted);max-width:850px}
+.question-progress{margin-top:10px;background:#f1ede5;border-radius:10px;padding:9px 11px;color:#5d574e}
+.answers-page{max-width:1280px}
+.answer-history-toggle{display:inline-flex;align-items:center;gap:8px;margin:0 0 20px;color:var(--muted);font-weight:700}
+.answer-inbox-section{margin-top:24px}
+.answer-inbox-list{display:grid;gap:13px}
+.answer-inbox-item{padding:0;overflow:hidden}
+.answer-inbox-main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;padding:18px}
+.answer-inbox-item.pending{border-left:4px solid var(--yellow-b)}
+.answer-inbox-item.accepted{border-left:4px solid var(--green-b)}
+.answer-inbox-item.accounted{border-left:4px solid #91a5b9}
+.answer-inbox-item h2{font-size:20px;margin:5px 0 7px}
+.answer-body{white-space:pre-wrap;margin:12px 0 0}
+.answer-inbox-actions{display:grid;gap:9px;align-content:start}
+.answer-inbox-actions textarea{width:100%;border:1px solid var(--line);border-radius:12px;background:white;padding:10px 12px;font:inherit;resize:vertical}
+@media(max-width:1050px){.branch-toolbar{grid-template-columns:1fr 1fr}.answer-inbox-main{grid-template-columns:1fr}}
+@media(max-width:620px){.branch-toolbar{grid-template-columns:1fr}.branch-progress{flex-direction:column}}
