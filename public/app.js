@@ -46,7 +46,7 @@
   function statusClass(p) {
     if (p.confidence === 'unconfirmed') return 'unconfirmed';
     const link = connectionConfidence.get(p.id);
-    if (link === 0) return 'unconfirmed';
+    if (link === undefined || link === 0) return 'unconfirmed';
     if (p.confidence === 'probable' || link === 1 || p.information_level === 'minimal') return 'limited';
     return 'confirmed';
   }
@@ -54,6 +54,7 @@
   function statusText(p) {
     if (p.confidence === 'unconfirmed') return 'Личность не подтверждена';
     const link = connectionConfidence.get(p.id);
+    if (link === undefined) return 'Не привязан к древу';
     if (link === 0) return 'Связь с древом не подтверждена';
     if (p.confidence === 'probable' || link === 1) return 'Связь вероятна';
     if (p.information_level === 'minimal') return 'Мало информации';
@@ -390,28 +391,47 @@
   }
 
   function renderTree(app) {
-    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая горизонтальная строка — одно поколение. Супруги всегда образуют один семейный блок, а разделители начинаются только выше пары — там, где ветвь действительно расходится на родителей.</p></div><div class="meta-chip">${people.length} записей</div></section>
-      <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button><label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>мало сведений</span><span><i class="dot unconfirmed"></i>не подтверждено</span></div></div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
+    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая строка — одно поколение. Ширина каждой ветви теперь рассчитывается по её реальному поддереву: большие семьи получают больше места, супруги остаются рядом, а дети одной семьи подключаются через общую линию.</p></div><div class="meta-chip">${people.length} записей</div></section>
+      <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button><label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>вероятно / мало сведений</span><span><i class="dot unconfirmed"></i>связь не подтверждена</span></div></div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
 
-    const svg = $('.tree-svg'), scene = $('#scene'), vp = $('#treeViewport');
-    const W=230, H=82, YS=172, PERSON_GAP=18, UNIT_GAP=82;
-    const allGenerations = people.map(generationOf);
-    const maxGen = Math.max(0, ...allGenerations);
+    const svg=$('.tree-svg'), scene=$('#scene'), vp=$('#treeViewport');
+    const W=230, H=82, YS=184, PERSON_GAP=18, UNIT_GAP=74, BRANCH_GAP=210, BRANCH_PAD=90, CANDIDATE_GAP=300, MIN_SCALE=.08;
+    const allGenerations=people.map(generationOf);
+    const maxGen=Math.max(0,...allGenerations);
     let scale=.8, tx=vp.clientWidth/2, ty=90, dragging=false, last={x:0,y:0};
 
-    const spouseEdges = relationships.filter(r => r.relationship_type === 'spouse_of');
+    const spouseEdges=relationships.filter(r=>r.relationship_type==='spouse_of');
 
-    function visiblePeople() {
-      return people.filter(p => $('#showCandidates').checked || p.confidence !== 'unconfirmed');
+    function visiblePeople(){
+      return people.filter(p => $('#showCandidates').checked || statusClass(p)!=='unconfirmed');
     }
 
-    function coupleComponents(arr) {
-      const ids = new Set(arr.map(p=>p.id));
-      const parent = new Map(arr.map(p=>[p.id,p.id]));
-      const find = x => {
+    function unitWidth(unit){
+      return unit.members.length*W + Math.max(0,unit.members.length-1)*PERSON_GAP;
+    }
+
+    function orderOfUnit(unit){
+      const values=unit.members.map(p=>p.layout_order).filter(Number.isFinite);
+      return values.length ? Math.min(...values) : null;
+    }
+
+    function compareUnits(a,b){
+      const ao=orderOfUnit(a), bo=orderOfUnit(b);
+      if(ao!==null || bo!==null){
+        if(ao===null) return 1;
+        if(bo===null) return -1;
+        if(ao!==bo) return ao-bo;
+      }
+      return fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru');
+    }
+
+    function coupleComponents(arr){
+      const ids=new Set(arr.map(p=>p.id));
+      const parent=new Map(arr.map(p=>[p.id,p.id]));
+      const find=x=>{
         let r=x;
         while(parent.get(r)!==r) r=parent.get(r);
-        while(parent.get(x)!==x){ const n=parent.get(x); parent.set(x,r); x=n; }
+        while(parent.get(x)!==x){const n=parent.get(x);parent.set(x,r);x=n;}
         return r;
       };
       const unite=(a,b)=>{
@@ -430,25 +450,20 @@
       return [...groups.values()];
     }
 
-    function unitPath(unit, g) {
+    function unitPath(unit,g){
       const paths=[...new Set(unit.map(p=>p.lineage_path || ''))];
       if(paths.length===1) return paths[0];
-
-      // The focal parents are a married pair whose personal P/M paths differ,
-      // but visually they must remain one central family unit.
       if(g===1 && paths.includes('P') && paths.includes('M')) return '';
-
-      // Otherwise keep the longest common prefix so a spouse pair stays together.
       let prefix=paths[0] || '';
-      for(const p of paths.slice(1)){
+      for(const path of paths.slice(1)){
         let i=0;
-        while(i<prefix.length && i<p.length && prefix[i]===p[i]) i++;
+        while(i<prefix.length && i<path.length && prefix[i]===path[i]) i++;
         prefix=prefix.slice(0,i);
       }
       return prefix;
     }
 
-    function unitsForLayout() {
+    function unitsForLayout(){
       const byGeneration=new Map();
       for(const p of visiblePeople()){
         const g=generationOf(p);
@@ -457,172 +472,353 @@
       }
 
       const units=[];
-      for(const [g, arr] of byGeneration){
+      let unitIndex=0;
+      for(const [g,arr] of byGeneration){
         for(const members of coupleComponents(arr)){
           members.sort((a,b)=>{
-            const ao=Number.isFinite(a.layout_order) ? a.layout_order : null;
-            const bo=Number.isFinite(b.layout_order) ? b.layout_order : null;
+            const ao=Number.isFinite(a.layout_order)?a.layout_order:null;
+            const bo=Number.isFinite(b.layout_order)?b.layout_order:null;
             if(ao!==null || bo!==null){
               if(ao===null) return 1;
               if(bo===null) return -1;
               if(ao!==bo) return ao-bo;
             }
-            const sexRank = x => x.sex==='male' ? 0 : x.sex==='female' ? 1 : 2;
+            const sexRank=x=>x.sex==='male'?0:x.sex==='female'?1:2;
             return sexRank(a)-sexRank(b) || fullName(a).localeCompare(fullName(b),'ru');
           });
+
+          const connected=members.some(p=>connectionConfidence.has(p.id));
           units.push({
+            id:`u${unitIndex++}`,
             generation:g,
             path:unitPath(members,g),
-            members
+            members,
+            candidate:!connected
           });
         }
       }
       return units;
     }
 
-    function layout() {
-      const units=unitsForLayout();
-      const groups=new Map();
+    function makeBranchNode(prefix=''){
+      return {prefix,children:new Map(),exactByGeneration:new Map(),width:0,center:0};
+    }
+
+    function buildBranchPlan(units){
+      const root=makeBranchNode('');
+      const candidates=[];
+
       for(const unit of units){
-        const key=`${unit.generation}|${unit.path}`;
-        if(!groups.has(key)) groups.set(key,[]);
-        groups.get(key).push(unit);
+        if(unit.candidate){
+          candidates.push(unit);
+          continue;
+        }
+        let node=root;
+        for(const ch of unit.path){
+          if(!node.children.has(ch)) node.children.set(ch,makeBranchNode(node.prefix+ch));
+          node=node.children.get(ch);
+        }
+        if(!node.exactByGeneration.has(unit.generation)) node.exactByGeneration.set(unit.generation,[]);
+        node.exactByGeneration.get(unit.generation).push(unit);
       }
 
+      function computeWidth(node){
+        let directMax=0;
+        for(const rowUnits of node.exactByGeneration.values()){
+          rowUnits.sort(compareUnits);
+          const w=rowUnits.reduce((sum,u)=>sum+unitWidth(u),0)+Math.max(0,rowUnits.length-1)*UNIT_GAP;
+          directMax=Math.max(directMax,w);
+        }
+
+        const childList=['P','M'].map(k=>node.children.get(k)).filter(Boolean);
+        let childTotal=0;
+        for(const child of childList) childTotal+=computeWidth(child);
+        if(childList.length>1) childTotal+=BRANCH_GAP*(childList.length-1);
+
+        node.width=Math.max(W+BRANCH_PAD,directMax+BRANCH_PAD,childTotal);
+        return node.width;
+      }
+
+      const boundaries=[];
+      function assign(node,center){
+        node.center=center;
+        const childList=['P','M'].map(k=>node.children.get(k)).filter(Boolean);
+        if(childList.length===1){
+          assign(childList[0],center);
+        }else if(childList.length>1){
+          const total=childList.reduce((s,ch)=>s+ch.width,0)+BRANCH_GAP*(childList.length-1);
+          let cursor=center-total/2;
+          childList.forEach((child,i)=>{
+            const childCenter=cursor+child.width/2;
+            assign(child,childCenter);
+            cursor+=child.width;
+            if(i<childList.length-1){
+              boundaries.push({
+                prefix:node.prefix,
+                x:cursor+BRANCH_GAP/2,
+                depth:node.prefix.length
+              });
+              cursor+=BRANCH_GAP;
+            }
+          });
+        }
+      }
+
+      computeWidth(root);
+      assign(root,0);
+      return {root,candidates,boundaries};
+    }
+
+    function layout(){
+      const units=unitsForLayout();
+      const plan=buildBranchPlan(units);
       const pos=new Map();
-      for(const [key, groupUnits] of groups){
-        const [gRaw,path]=key.split('|');
-        const g=Number(gRaw);
-        groupUnits.sort((a,b)=>{
-          const orderOf = unit => {
-            const values=unit.members.map(p=>p.layout_order).filter(Number.isFinite);
-            return values.length ? Math.min(...values) : null;
-          };
-          const ao=orderOf(a), bo=orderOf(b);
-          if(ao!==null || bo!==null){
-            if(ao===null) return 1;
-            if(bo===null) return -1;
-            if(ao!==bo) return ao-bo;
-          }
-          return fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru');
-        });
+      const unitCenters=new Map();
 
-        const widths=groupUnits.map(u=>u.members.length*W+(u.members.length-1)*PERSON_GAP);
-        const totalWidth=widths.reduce((s,x)=>s+x,0)+Math.max(0,groupUnits.length-1)*UNIT_GAP;
-        let cursor=branchCenter(path)-totalWidth/2;
+      function placeNode(node){
+        for(const [g,rowUnits] of node.exactByGeneration){
+          rowUnits.sort(compareUnits);
+          const widths=rowUnits.map(unitWidth);
+          const total=widths.reduce((s,x)=>s+x,0)+Math.max(0,rowUnits.length-1)*UNIT_GAP;
+          let cursor=node.center-total/2;
+          rowUnits.forEach((unit,ui)=>{
+            const width=widths[ui];
+            const unitCenter=cursor+width/2;
+            unitCenters.set(unit.id,unitCenter);
+            unit.members.forEach((p,mi)=>{
+              pos.set(p.id,{
+                x:cursor+mi*(W+PERSON_GAP)+W/2,
+                y:(maxGen-g)*YS,
+                generation:g,
+                path:node.prefix,
+                unitId:unit.id
+              });
+            });
+            cursor+=width+UNIT_GAP;
+          });
+        }
+        for(const child of node.children.values()) placeNode(child);
+      }
+      placeNode(plan.root);
 
-        groupUnits.forEach((unit,ui)=>{
+      // People that are not connected to the focal family tree are kept in a
+      // separate lane instead of being injected into the middle of the tree.
+      const candidateByGeneration=new Map();
+      for(const unit of plan.candidates){
+        if(!candidateByGeneration.has(unit.generation)) candidateByGeneration.set(unit.generation,[]);
+        candidateByGeneration.get(unit.generation).push(unit);
+      }
+      const candidateStart=plan.root.width/2+CANDIDATE_GAP;
+      let candidateMaxX=candidateStart;
+      for(const [g,rowUnits] of candidateByGeneration){
+        rowUnits.sort(compareUnits);
+        let cursor=candidateStart;
+        rowUnits.forEach(unit=>{
+          const width=unitWidth(unit);
+          unitCenters.set(unit.id,cursor+width/2);
           unit.members.forEach((p,mi)=>{
-            const x=cursor+mi*(W+PERSON_GAP)+W/2;
             pos.set(p.id,{
-              x,
+              x:cursor+mi*(W+PERSON_GAP)+W/2,
               y:(maxGen-g)*YS,
               generation:g,
-              path
+              path:'candidate',
+              unitId:unit.id
             });
           });
-          cursor+=widths[ui]+UNIT_GAP;
+          cursor+=width+UNIT_GAP;
         });
-      }
-      return pos;
-    }
-
-    function apply(){ scene.setAttribute('transform', `translate(${tx} ${ty}) scale(${scale})`); }
-    function trunc(s,n){ s=String(s||''); return esc(s.length>n ? s.slice(0,n-1)+'…' : s); }
-
-    function subtreePresent(prefix) {
-      return visiblePeople().some(p => (p.lineage_path || '').startsWith(prefix));
-    }
-
-    function recursiveDividers(minY) {
-      const paths=[...new Set(visiblePeople().map(p=>p.lineage_path || '').filter(Boolean))];
-      const prefixes=new Set(['']);
-      for(const path of paths){
-        for(let i=0;i<path.length;i++) prefixes.add(path.slice(0,i));
+        candidateMaxX=Math.max(candidateMaxX,cursor);
       }
 
-      const lines=[];
-      for(const prefix of prefixes){
-        const left=prefix+'P', right=prefix+'M';
-        if(!subtreePresent(left) || !subtreePresent(right)) continue;
-
-        // A prefix of length d represents the couple one generation below
-        // the two parent branches. Stop the separator above that couple row.
-        const coupleGeneration=prefix.length+1;
-        if(coupleGeneration>maxGen) continue;
-        const yEnd=(maxGen-coupleGeneration)*YS-H/2-20;
-        const cls=prefix==='' ? 'branch-divider main' : 'branch-divider secondary';
-        lines.push(`<line class="${cls}" x1="${branchCenter(prefix)}" y1="${minY}" x2="${branchCenter(prefix)}" y2="${yEnd}"/>`);
-      }
-      return lines.join('');
+      return {pos,plan,unitCenters,candidateStart,candidateMaxX};
     }
 
-    function draw(focus='') {
-      const pos=layout();
+    function apply(){
+      scene.setAttribute('transform',`translate(${tx} ${ty}) scale(${scale})`);
+    }
+
+    function trunc(s,n){
+      s=String(s||'');
+      return esc(s.length>n?s.slice(0,n-1)+'…':s);
+    }
+
+    function branchNode(root,prefix){
+      let node=root;
+      for(const ch of prefix){
+        node=node.children.get(ch);
+        if(!node) return null;
+      }
+      return node;
+    }
+
+    function dividerHtml(plan,minY){
+      return plan.boundaries.map(b=>{
+        const coupleGeneration=b.depth+1;
+        const yEnd=(maxGen-coupleGeneration)*YS-H/2-22;
+        if(yEnd<=minY+25) return '';
+        const cls=b.prefix===''?'branch-divider main':'branch-divider secondary';
+        return `<line class="${cls}" x1="${b.x}" y1="${minY}" x2="${b.x}" y2="${yEnd}"/>`;
+      }).join('');
+    }
+
+    function relationshipClass(rels){
+      if(rels.some(r=>r.confidence==='unconfirmed')) return 'unconfirmed';
+      if(rels.some(r=>r.confidence==='probable')) return 'probable';
+      return '';
+    }
+
+    function parentBusHtml(pos,ids){
+      const childParents=new Map();
+
+      for(const r of relationships){
+        if(r.relationship_type!=='parent_of') continue;
+        if(!ids.has(r.person_a_id) || !ids.has(r.person_b_id)) continue;
+        if(!childParents.has(r.person_b_id)) childParents.set(r.person_b_id,[]);
+        childParents.get(r.person_b_id).push(r);
+      }
+
+      const groups=new Map();
+      for(const [childId,rels] of childParents){
+        const parentIds=[...new Set(rels.map(r=>r.person_a_id))].sort();
+        const child=pos.get(childId);
+        if(!child || !parentIds.length) continue;
+        const style=relationshipClass(rels);
+        const key=`${parentIds.join('|')}|${child.generation}|${style}`;
+        if(!groups.has(key)) groups.set(key,{parentIds,children:[],rels:[],style});
+        groups.get(key).children.push(childId);
+        groups.get(key).rels.push(...rels);
+      }
+
+      const html=[];
+      for(const group of groups.values()){
+        const parents=group.parentIds.map(id=>pos.get(id)).filter(Boolean);
+        const children=group.children.map(id=>pos.get(id)).filter(Boolean).sort((a,b)=>a.x-b.x);
+        if(!parents.length || !children.length) continue;
+
+        const parentBottom=Math.max(...parents.map(p=>p.y+H/2));
+        const childTop=Math.min(...children.map(p=>p.y-H/2));
+
+        // Safety fallback for malformed/cross-generation links.
+        if(childTop<=parentBottom+16){
+          for(const childId of group.children){
+            const child=pos.get(childId);
+            for(const parentId of group.parentIds){
+              const parent=pos.get(parentId);
+              if(!parent || !child) continue;
+              const mid=(parent.y+child.y)/2;
+              html.push(`<path class="edge family ${group.style}" d="M ${parent.x} ${parent.y+H/2} C ${parent.x} ${mid}, ${child.x} ${mid}, ${child.x} ${child.y-H/2}"/>`);
+            }
+          }
+          continue;
+        }
+
+        const sourceX=parents.reduce((s,p)=>s+p.x,0)/parents.length;
+        const joinY=parentBottom+Math.min(34,(childTop-parentBottom)*.26);
+        const busY=parentBottom+(childTop-parentBottom)*.58;
+
+        if(parents.length>1){
+          for(const parent of parents){
+            html.push(`<path class="edge family ${group.style}" d="M ${parent.x} ${parent.y+H/2} L ${parent.x} ${joinY} L ${sourceX} ${joinY}"/>`);
+          }
+        }else{
+          html.push(`<path class="edge family ${group.style}" d="M ${sourceX} ${parentBottom} L ${sourceX} ${busY}"/>`);
+        }
+
+        if(parents.length>1){
+          html.push(`<path class="edge family ${group.style}" d="M ${sourceX} ${joinY} L ${sourceX} ${busY}"/>`);
+        }
+
+        if(children.length===1){
+          const child=children[0];
+          html.push(`<path class="edge family ${group.style}" d="M ${sourceX} ${busY} L ${child.x} ${busY} L ${child.x} ${child.y-H/2}"/>`);
+        }else{
+          const minChildX=Math.min(sourceX,...children.map(ch=>ch.x));
+          const maxChildX=Math.max(sourceX,...children.map(ch=>ch.x));
+          html.push(`<path class="edge family ${group.style}" d="M ${minChildX} ${busY} L ${maxChildX} ${busY}"/>`);
+          for(const child of children){
+            html.push(`<path class="edge family ${group.style}" d="M ${child.x} ${busY} L ${child.x} ${child.y-H/2}"/>`);
+          }
+        }
+      }
+      return html.join('');
+    }
+
+    function draw(focus=''){
+      const data=layout();
+      const {pos,plan,candidateStart,candidateMaxX}=data;
       const ids=new Set([...pos.keys()]);
-      if(!pos.size){ scene.innerHTML=''; return; }
+      if(!pos.size){scene.innerHTML='';return;}
 
       const ps=[...pos.values()];
       const minX=Math.min(...ps.map(p=>p.x-W/2))-360;
-      const maxX=Math.max(...ps.map(p=>p.x+W/2))+220;
-      const minY=Math.min(...ps.map(p=>p.y-H/2))-105;
-      const maxY=Math.max(...ps.map(p=>p.y+H/2))+85;
+      const maxX=Math.max(...ps.map(p=>p.x+W/2))+260;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-112;
+      const maxY=Math.max(...ps.map(p=>p.y+H/2))+88;
 
       const generations=[...new Set(ps.map(p=>p.generation))].sort((a,b)=>b-a);
       const rows=generations.map(g=>{
         const y=(maxGen-g)*YS;
-        return `<g class="generation-guide"><line x1="${minX}" y1="${y+H/2+43}" x2="${maxX}" y2="${y+H/2+43}"/><text x="${minX+8}" y="${y-H/2-18}">${esc(generationTitle(g))}</text></g>`;
+        return `<g class="generation-guide"><line x1="${minX}" y1="${y+H/2+45}" x2="${maxX}" y2="${y+H/2+45}"/><text x="${minX+8}" y="${y-H/2-18}">${esc(generationTitle(g))}</text></g>`;
       }).join('');
 
-      const branchGuides=`
-        <g class="branch-guides">
-          ${recursiveDividers(minY)}
-          ${subtreePresent('P') ? `<text class="branch-title paternal" x="${branchCenter('P')}" y="${minY+24}">ОТЦОВСКАЯ ВЕТВЬ</text>` : ''}
-          ${subtreePresent('M') ? `<text class="branch-title maternal" x="${branchCenter('M')}" y="${minY+24}">МАТЕРИНСКАЯ ВЕТВЬ</text>` : ''}
-        </g>`;
+      const pNode=branchNode(plan.root,'P');
+      const mNode=branchNode(plan.root,'M');
+      const hasCandidates=plan.candidates.length>0;
+      const branchGuides=`<g class="branch-guides">
+        ${dividerHtml(plan,minY)}
+        ${pNode?`<text class="branch-title paternal" x="${pNode.center}" y="${minY+24}">ОТЦОВСКАЯ ВЕТВЬ</text>`:''}
+        ${mNode?`<text class="branch-title maternal" x="${mNode.center}" y="${minY+24}">МАТЕРИНСКАЯ ВЕТВЬ</text>`:''}
+        ${hasCandidates?`<line class="branch-divider candidate" x1="${candidateStart-CANDIDATE_GAP/2}" y1="${minY}" x2="${candidateStart-CANDIDATE_GAP/2}" y2="${maxY}"/><text class="branch-title candidate-title" x="${(candidateStart+candidateMaxX)/2}" y="${minY+24}">НЕПРИВЯЗАННЫЕ КАНДИДАТЫ</text>`:''}
+      </g>`;
 
-      const edgeHtml=relationships.filter(r=>ids.has(r.person_a_id)&&ids.has(r.person_b_id)).map(r=>{
+      const spouseHtml=relationships.filter(r=>
+        r.relationship_type==='spouse_of' && ids.has(r.person_a_id) && ids.has(r.person_b_id)
+      ).map(r=>{
         const a=pos.get(r.person_a_id), b=pos.get(r.person_b_id);
         if(!a||!b) return '';
-        const un=r.confidence==='unconfirmed' ? 'unconfirmed' : '';
-
-        if(r.relationship_type==='spouse_of'){
-          const left=a.x<=b.x?a:b, right=a.x<=b.x?b:a;
-          return `<path class="edge spouse ${un}" d="M ${left.x+W/2} ${left.y} L ${right.x-W/2} ${right.y}"/>`;
-        }
-
-        if(r.relationship_type!=='parent_of') return '';
-        const y1=a.y+H/2, y2=b.y-H/2, mid=(y1+y2)/2;
-        return `<path class="edge ${un}" d="M ${a.x} ${y1} C ${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${y2}"/>`;
+        const left=a.x<=b.x?a:b, right=a.x<=b.x?b:a;
+        const cls=r.confidence==='unconfirmed'?'unconfirmed':r.confidence==='probable'?'probable':'';
+        return `<path class="edge spouse ${cls}" d="M ${left.x+W/2} ${left.y} L ${right.x-W/2} ${right.y}"/>`;
       }).join('');
+
+      const familyHtml=parentBusHtml(pos,ids);
 
       const nodeHtml=visiblePeople().map(p=>{
-        const q=pos.get(p.id), st=statusClass(p);
-        const branch=p.lineage_path ? ` · ${p.lineage_path}` : '';
-        return `<g class="node ${st} ${p.id===focus?'focused':''}" data-id="${p.id}" transform="translate(${q.x-W/2},${q.y-H/2})"><rect rx="14" width="${W}" height="${H}"/><text class="name" x="14" y="24">${trunc(fullName(p),28)}</text><text class="sub" x="14" y="45">${trunc(years(p)||p.birth_place||'',31)}</text><text class="tag" x="14" y="66">${trunc(`Поколение ${generationOf(p)}${branch}`,28)}</text></g>`;
+        const q=pos.get(p.id);
+        if(!q) return '';
+        const st=statusClass(p);
+        const branch=p.lineage_path?` · ${p.lineage_path}`:'';
+        return `<g class="node ${st} ${p.id===focus?'focused':''}" data-id="${p.id}" transform="translate(${q.x-W/2},${q.y-H/2})"><rect rx="14" width="${W}" height="${H}"/><text class="name" x="14" y="24">${trunc(fullName(p),28)}</text><text class="sub" x="14" y="45">${trunc(years(p)||p.birth_place||'',31)}</text><text class="tag" x="14" y="66">${trunc(statusText(p),28)}</text></g>`;
       }).join('');
 
-      scene.innerHTML=rows+branchGuides+edgeHtml+nodeHtml;
+      scene.innerHTML=rows+branchGuides+spouseHtml+familyHtml+nodeHtml;
       $$('.node',scene).forEach(n=>n.onclick=()=>location.hash=`#/person/${n.dataset.id}`);
       apply();
     }
 
     function fit(){
-      const pos=layout(); if(!pos.size) return;
+      const {pos}=layout();
+      if(!pos.size) return;
       const ps=[...pos.values()];
-      const minX=Math.min(...ps.map(p=>p.x-W/2))-390, maxX=Math.max(...ps.map(p=>p.x+W/2))+240;
-      const minY=Math.min(...ps.map(p=>p.y-H/2))-120, maxY=Math.max(...ps.map(p=>p.y+H/2))+110;
+      const minX=Math.min(...ps.map(p=>p.x-W/2))-410;
+      const maxX=Math.max(...ps.map(p=>p.x+W/2))+270;
+      const minY=Math.min(...ps.map(p=>p.y-H/2))-125;
+      const maxY=Math.max(...ps.map(p=>p.y+H/2))+115;
       const bw=Math.max(1,maxX-minX), bh=Math.max(1,maxY-minY);
       scale=Math.min((vp.clientWidth-70)/bw,(vp.clientHeight-70)/bh,1);
+      scale=Math.max(MIN_SCALE,scale);
       tx=vp.clientWidth/2-(minX+maxX)/2*scale;
       ty=vp.clientHeight/2-(minY+maxY)/2*scale;
       apply();
     }
 
     function center(id){
-      const p=peopleMap.get(id); if(!p) return;
-      const q=layout().get(id); if(!q) return;
-      scale=Math.max(scale,.95);
+      const p=peopleMap.get(id);
+      if(!p) return;
+      const {pos}=layout();
+      const q=pos.get(id);
+      if(!q) return;
+      scale=Math.max(scale,.92);
       tx=vp.clientWidth/2-q.x*scale;
       ty=vp.clientHeight/2-q.y*scale;
       draw(id);
@@ -631,12 +827,31 @@
     svg.addEventListener('wheel',e=>{
       e.preventDefault();
       const rect=svg.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top, old=scale;
-      scale=Math.max(.28,Math.min(2.2,scale*(e.deltaY<0?1.1:.9)));
-      tx=mx-(mx-tx)*(scale/old); ty=my-(my-ty)*(scale/old); apply();
+      scale=Math.max(MIN_SCALE,Math.min(2.2,scale*(e.deltaY<0?1.1:.9)));
+      tx=mx-(mx-tx)*(scale/old);
+      ty=my-(my-ty)*(scale/old);
+      apply();
     },{passive:false});
-    vp.addEventListener('pointerdown',e=>{if(e.target.closest('.node'))return;dragging=true;last={x:e.clientX,y:e.clientY};vp.setPointerCapture(e.pointerId);vp.classList.add('dragging')});
-    vp.addEventListener('pointermove',e=>{if(!dragging)return;tx+=e.clientX-last.x;ty+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};apply();});
-    vp.addEventListener('pointerup',()=>{dragging=false;vp.classList.remove('dragging')});
+
+    vp.addEventListener('pointerdown',e=>{
+      if(e.target.closest('.node')) return;
+      dragging=true;
+      last={x:e.clientX,y:e.clientY};
+      vp.setPointerCapture(e.pointerId);
+      vp.classList.add('dragging');
+    });
+    vp.addEventListener('pointermove',e=>{
+      if(!dragging) return;
+      tx+=e.clientX-last.x;
+      ty+=e.clientY-last.y;
+      last={x:e.clientX,y:e.clientY};
+      apply();
+    });
+    vp.addEventListener('pointerup',()=>{
+      dragging=false;
+      vp.classList.remove('dragging');
+    });
+
     $('#fitTree').onclick=fit;
     $('#showCandidates').onchange=()=>{draw();fit();};
     $('#treeSearch').oninput=e=>{
@@ -645,7 +860,9 @@
       const p=visiblePeople().find(x=>fullName(x).toLowerCase().includes(q));
       if(p) center(p.id);
     };
-    draw(); setTimeout(fit,0);
+
+    draw();
+    setTimeout(fit,0);
   }
 
   async function renderPerson(app, id) {
