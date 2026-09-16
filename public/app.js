@@ -244,7 +244,7 @@
     setLoggedInUi(false);
     const app = $("#app");
     if (success) {
-      app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">✓</div><div class="eyebrow">Заявка отправлена</div><h1>Ждём подтверждения</h1><p>Аккаунт создан, а администратор получил заявку на доступ. После одобрения можно будет войти через обычную форму. Если Supabase попросил подтвердить email, сначала перейдите по ссылке из письма.</p><button class="btn primary" id="backToLogin" type="button">К входу</button></div></section>`;
+      app.innerHTML = `<section class="auth-shell"><div class="auth-card"><div class="auth-lock">✓</div><div class="eyebrow">Заявка отправлена</div><h1>Ждём подтверждения</h1><p>Аккаунт создан, а администратор получил заявку на доступ. После одобрения можно будет сразу войти через обычную форму — подтверждение email не требуется.</p><button class="btn primary" id="backToLogin" type="button">К входу</button></div></section>`;
       $("#backToLogin").onclick = () => renderLogin();
       return;
     }
