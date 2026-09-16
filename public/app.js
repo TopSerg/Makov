@@ -110,13 +110,16 @@
     authUser = data.user || null;
   }
 
-  async function signUp(email, password, displayName) {
+  async function signUp(email, password, displayName, accessMessage="") {
     const r = await authRest("/signup", {
       method: "POST",
       body: JSON.stringify({
         email,
         password,
-        data: { display_name: displayName }
+        data: {
+          display_name: displayName,
+          access_message: accessMessage
+        }
       })
     });
     const data = await r.json().catch(() => ({}));
@@ -214,7 +217,7 @@
       button.textContent = "Создание аккаунта…";
 
       try {
-        const data = await signUp(email, password, displayName);
+        const data = await signUp(email, password, displayName, messageText);
         const user = data.user;
         if (!user?.id) {
           throw new Error("Supabase не вернул идентификатор нового пользователя.");
