@@ -32,6 +32,7 @@ export default async (req) => {
     if (!person) return json({ error: "Person not found or not visible" }, 404);
 
     const personId = person.id;
+    const readerMode = auth.profile.role === "reader";
 
     const [
       privateResult,
@@ -118,12 +119,36 @@ export default async (req) => {
     // family/private relation is hidden by RLS.
     return json({
       person,
-      private: privateResult.error ? null : (privateResult.data ?? null),
-      relationships: relationsResult.error ? [] : (relationsResult.data ?? []),
-      events: eventsResult.error ? [] : (eventsResult.data ?? []),
-      sources: sourcesResult.error ? [] : (sourcesResult.data ?? []),
-      claims: claimsResult.error ? [] : (claimsResult.data ?? []),
-      media: mediaResult.error ? [] : (mediaResult.data ?? []),
+      private: readerMode ? null : (privateResult.error ? null : (privateResult.data ?? null)),
+      relationships: relationsResult.error ? [] : (readerMode
+        ? (relationsResult.data ?? []).map(r => ({
+            id: r.id,
+            person_a_id: r.person_a_id,
+            person_b_id: r.person_b_id,
+            relationship_type: r.relationship_type,
+            confidence: r.confidence
+          }))
+        : (relationsResult.data ?? [])),
+      events: readerMode ? [] : (eventsResult.error ? [] : (eventsResult.data ?? [])),
+      sources: sourcesResult.error ? [] : (readerMode
+        ? (sourcesResult.data ?? []).map(item => ({
+            source: item.source
+              ? {
+                  id: item.source.id,
+                  title: item.source.title,
+                  source_type: item.source.source_type,
+                  archive_name: item.source.archive_name,
+                  fond: item.source.fond,
+                  inventory: item.source.inventory,
+                  file_number: item.source.file_number,
+                  page_or_sheet: item.source.page_or_sheet,
+                  url: item.source.url
+                }
+              : null
+          })).filter(item => item.source?.url)
+        : (sourcesResult.data ?? [])),
+      claims: readerMode ? [] : (claimsResult.error ? [] : (claimsResult.data ?? [])),
+      media: readerMode ? [] : (mediaResult.error ? [] : (mediaResult.data ?? [])),
     });
   } catch (error) {
     console.error(error);

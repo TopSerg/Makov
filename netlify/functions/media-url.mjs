@@ -7,6 +7,9 @@ export default async (req) => {
     const db = supabaseForRequest(req);
     const auth = await requireAuthorizedUser(db);
     if (!auth.ok) return auth.response;
+    if (auth.profile.role === "reader") {
+      return json({ error: "Media is not available for reader accounts" }, 403);
+    }
     const url = new URL(req.url);
     const mediaId = url.searchParams.get("id");
 

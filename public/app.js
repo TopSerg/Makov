@@ -325,8 +325,12 @@
     connectionConfidence = buildConnectionConfidence();
     const accessNav = $("#accessNav");
     const answersNav = $("#answersNav");
+    const questionsNav = $("#questionsNav");
+    const aboutNav = $("#aboutNav");
     if (accessNav) accessNav.hidden = viewer?.role !== "admin";
     if (answersNav) answersNav.hidden = viewer?.role !== "admin";
+    if (questionsNav) questionsNav.hidden = viewer?.role === "reader";
+    if (aboutNav) aboutNav.hidden = viewer?.role === "reader";
   }
 
   function setActive(page) {
@@ -346,12 +350,18 @@
     try {
       if ((page || 'tree') === 'tree') renderTree(app);
       else if (page === 'person') await renderPerson(app, id);
-      else if (page === 'questions') await renderQuestions(app);
+      else if (page === 'questions') {
+        if (viewer?.role === "reader") location.hash = '#/tree';
+        else await renderQuestions(app);
+      }
       else if (page === 'answers') {
         if (viewer?.role !== "admin") location.hash = '#/tree';
         else await renderAnswerInbox(app);
       }
-      else if (page === 'about') renderAbout(app);
+      else if (page === 'about') {
+        if (viewer?.role === "reader") location.hash = '#/tree';
+        else renderAbout(app);
+      }
       else if (page === 'access') {
         if (viewer?.role !== "admin") location.hash = '#/tree';
         else await renderAccessRequests(app);
@@ -397,8 +407,10 @@
   }
 
   function renderTree(app) {
-    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Supabase · Netlify</div><h1>Семейное древо</h1><p>Каждая строка — одно поколение. Ширина каждой ветви теперь рассчитывается по её реальному поддереву: большие семьи получают больше места, супруги остаются рядом, а дети одной семьи подключаются через общую линию.</p></div><div class="meta-chip">${people.length} записей</div></section>
-      <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button><label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>вероятно / мало сведений</span><span><i class="dot unconfirmed"></i>связь не подтверждена</span></div></div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
+    const readerMode = viewer?.role === "reader";
+    const researchControls = readerMode ? "" : `<label class="btn"><input type="checkbox" id="showCandidates" checked> кандидаты</label><div class="legend"><span><i class="dot confirmed"></i>подтверждено</span><span><i class="dot limited"></i>вероятно / мало сведений</span><span><i class="dot unconfirmed"></i>связь не подтверждена</span></div>`;
+    app.innerHTML = `<section class="hero"><div><div class="eyebrow">Семейный архив</div><h1>Семейное древо</h1><p>${readerMode ? "Родственные связи и основные сведения о членах семьи." : "Каждая строка — одно поколение. Ширина каждой ветви теперь рассчитывается по её реальному поддереву: большие семьи получают больше места, супруги остаются рядом, а дети одной семьи подключаются через общую линию."}</p></div><div class="meta-chip">${people.length} записей</div></section>
+      <section class="tree-shell"><div class="tree-toolbar"><input id="treeSearch" placeholder="Найти родственника…" autocomplete="off"><button class="btn" id="fitTree">Показать всё</button>${researchControls}</div><div id="treeViewport"><svg class="tree-svg" aria-label="Генеалогическое древо"><g id="scene"></g></svg><div class="tree-hint">колесо — масштаб · перетаскивание — перемещение</div></div></section>`;
 
     const svg=$('.tree-svg'), scene=$('#scene'), vp=$('#treeViewport');
     const W=230, H=82, YS=190, PERSON_GAP=18, UNIT_GAP=74, BRANCH_GAP=210, BRANCH_PAD=90, CANDIDATE_GAP=300, MIN_SCALE=.08;
@@ -409,7 +421,9 @@
     const spouseEdges=relationships.filter(r=>r.relationship_type==='spouse_of');
 
     function visiblePeople(){
-      return people.filter(p => $('#showCandidates').checked || statusClass(p)!=='unconfirmed');
+      if (readerMode) return people;
+      const toggle = $('#showCandidates');
+      return people.filter(p => !toggle || toggle.checked || statusClass(p)!=='unconfirmed');
     }
 
     function unitWidth(unit){
@@ -877,7 +891,8 @@
     });
 
     $('#fitTree').onclick=fit;
-    $('#showCandidates').onchange=()=>{draw();fit();};
+    const candidateToggle=$('#showCandidates');
+    if(candidateToggle) candidateToggle.onchange=()=>{draw();fit();};
     $('#treeSearch').oninput=e=>{
       const q=e.target.value.trim().toLowerCase();
       if(!q){draw();return;}
@@ -894,8 +909,6 @@
     try {
       d = await api(`/.netlify/functions/person?id=${encodeURIComponent(id)}`);
     } catch (error) {
-      // Never leave a clicked relative on an empty page: the tree payload
-      // already contains enough public data for a basic card.
       const basic = peopleMap.get(id);
       if (!basic) throw error;
       d = {
@@ -908,6 +921,7 @@
       };
     }
 
+    const readerMode = viewer?.role === "reader";
     const p=d.person;
     const rels=(d.relationships||[]).map(r=>{
       const otherId=r.person_a_id===p.id ? r.person_b_id : r.person_a_id;
@@ -932,17 +946,30 @@
 
     const generation = Number.isInteger(p.generation) ? p.generation : generationOf(p);
     const lineage = p.lineage_path || 'центральная ветвь';
+    const headerMeta = readerMode
+      ? ""
+      : `<div class="chip-row"><span class="chip">Поколение ${generation}</span><span class="chip">Ветвь: ${esc(lineage)}</span></div>`;
+    const statusPill = readerMode ? "" : `<span class="status-pill ${statusClass(p)}">${statusText(p)}</span>`;
+
+    const relationHtml = rels.length
+      ? rels.map(({r,other})=>`<a class="relation-item" href="#/person/${other.id}"><b>${esc(fullName(other))}</b><div class="small">${esc(relationLabel(r,other))}${readerMode ? "" : ` · ${esc(r.confidence)}`}</div></a>`).join('')
+      : '<div class="muted">Связи не внесены.</div>';
+
+    const researchBlocks = readerMode ? "" : `
+        <article class="card span-6"><h2>События</h2>${eventHtml||'<div class="muted">События пока не внесены.</div>'}</article>
+        <article class="card span-12"><h2>Гипотезы</h2>${claims||'<div class="muted">Нет активных гипотез.</div>'}</article>`;
+
+    const sourceTitle = readerMode ? "Подтверждённые источники" : "Источники";
 
     app.innerHTML=`<section class="page">
       <a class="backlink" href="#/tree">← Вернуться к древу</a>
-      <div class="page-head"><div><div class="eyebrow">Карточка человека</div><h1>${esc(fullName(p))}</h1><div class="chip-row"><span class="chip">Поколение ${generation}</span><span class="chip">Ветвь: ${esc(lineage)}</span></div></div><span class="status-pill ${statusClass(p)}">${statusText(p)}</span></div>
+      <div class="page-head"><div><div class="eyebrow">Карточка человека</div><h1>${esc(fullName(p))}</h1>${headerMeta}</div>${statusPill}</div>
       <div class="grid">
         <article class="card span-7"><h2>Что известно</h2>${p.biography?`<p>${esc(p.biography)}</p>`:'<p class="muted">Биография пока не заполнена.</p>'}</article>
         <aside class="card span-5"><h2>Карточка</h2><dl class="kv"><dt>Рождение</dt><dd>${esc(p.birth_display||'не установлено')}</dd><dt>Место рождения</dt><dd>${esc(p.birth_place||'не установлено')}</dd><dt>Смерть</dt><dd>${esc(p.death_display||'нет данных')}</dd><dt>Место смерти</dt><dd>${esc(p.death_place||'нет данных')}</dd></dl></aside>
-        <article class="card span-6"><h2>Семейные связи</h2><div class="relation-list">${rels.length?rels.map(({r,other})=>`<a class="relation-item" href="#/person/${other.id}"><b>${esc(fullName(other))}</b><div class="small">${esc(relationLabel(r,other))} · ${esc(r.confidence)}</div></a>`).join(''):'<div class="muted">Связи не внесены.</div>'}</div></article>
-        <article class="card span-6"><h2>События</h2>${eventHtml||'<div class="muted">События пока не внесены.</div>'}</article>
-        <article class="card span-12"><h2>Гипотезы</h2>${claims||'<div class="muted">Нет активных гипотез.</div>'}</article>
-        <article class="card span-12"><h2>Источники</h2><div class="source-list">${srcs.length?srcs.map(s=>`<div class="source-item"><div class="small">${esc(s.source_type||'Источник')}</div>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`:`<b>${esc(s.title)}</b>`}${s.archive_name?`<div class="small">${esc([s.archive_name,s.fond,s.inventory,s.file_number].filter(Boolean).join(' · '))}</div>`:''}</div>`).join(''):'<div class="muted">Источники пока не привязаны.</div>'}</div></article>
+        <article class="card ${readerMode ? "span-12" : "span-6"}"><h2>Семейные связи</h2><div class="relation-list">${relationHtml}</div></article>
+        ${researchBlocks}
+        <article class="card span-12"><h2>${sourceTitle}</h2><div class="source-list">${srcs.length?srcs.map(s=>`<div class="source-item"><div class="small">${esc(s.source_type||'Источник')}</div>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`:`<b>${esc(s.title)}</b>`}${s.archive_name?`<div class="small">${esc([s.archive_name,s.fond,s.inventory,s.file_number].filter(Boolean).join(' · '))}</div>`:''}</div>`).join(''):'<div class="muted">Подтверждённые ссылки пока не привязаны.</div>'}</div></article>
       </div>
     </section>`;
   }
@@ -978,8 +1005,14 @@
   }
 
   async function refreshQuestionBadge() {
+    const nav = $("#questionsNav");
     const badge = $("#questionBadge");
     if (!badge || !authUser) return;
+    if (viewer?.role === "reader") {
+      if (nav) nav.hidden = true;
+      badge.hidden = true;
+      return;
+    }
     try {
       const data = await loadQuestionsData();
       const count = (data.questions || []).filter(q =>

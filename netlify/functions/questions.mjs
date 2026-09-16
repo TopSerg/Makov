@@ -7,6 +7,9 @@ export default async (req) => {
     const db = supabaseForRequest(req);
     const auth = await requireAuthorizedUser(db);
     if (!auth.ok) return auth.response;
+    if (auth.profile.role === "reader") {
+      return json({ error: "Research questions are not available for reader accounts" }, 403);
+    }
 
     const [branchesResult, questionsResult, answersResult] = await Promise.all([
       db
