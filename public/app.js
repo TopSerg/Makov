@@ -1278,11 +1278,62 @@
     });
   }
 
+  async function fetchAdminUsers() {
+    return api("/.netlify/functions/admin-users");
+  }
+
+  async function changeAdminUserRole(userId, role) {
+    return api("/.netlify/functions/admin-users", {
+      method:"POST",
+      headers:{ "content-type":"application/json" },
+      body:JSON.stringify({ user_id:userId, role })
+    });
+  }
+
+  function roleSelectOptions(currentRole) {
+    const roles = [
+      ["reader", "Reader — только чтение"],
+      ["editor", "Editor — чтение и редактирование"],
+      ["admin", "Admin — полный доступ"]
+    ];
+    return roles.map(([value, label]) =>
+      `<option value="${value}" ${currentRole===value ? "selected" : ""}>${label}</option>`
+    ).join("");
+  }
+
   async function renderAccessRequests(app) {
-    const data=await fetchAccessRequests("all");
-    const requests=data.requests || [];
+    const [requestData, userData]=await Promise.all([
+      fetchAccessRequests("all"),
+      fetchAdminUsers()
+    ]);
+    const requests=requestData.requests || [];
+    const users=userData.users || [];
     const pending=requests.filter(r=>r.status==="pending");
-    app.innerHTML=`<section class="page"><div class="page-head"><div><div class="eyebrow">Администрирование</div><h1>Заявки на доступ</h1><p class="muted">Новые пользователи не видят семейные данные до явного одобрения администратором.</p></div><span class="meta-chip">${pending.length} ожидают</span></div><div class="access-list">${requests.length ? requests.map(r=>`<article class="card access-request ${r.status}"><div class="access-request-main"><div><div class="eyebrow">${esc(r.status==="pending" ? "Ожидает решения" : r.status==="approved" ? "Одобрено" : "Отклонено")}</div><h2>${esc(r.display_name || r.email)}</h2><div class="small">${esc(r.email)} · ${new Date(r.requested_at).toLocaleString("ru-RU")}</div>${r.message ? `<p>${esc(r.message)}</p>` : '<p class="muted">Комментарий не оставлен.</p>'}</div>${r.status==="pending" ? `<div class="access-actions"><label>Роль<select data-role="${r.id}"><option value="reader">Reader — только чтение</option><option value="editor">Editor — чтение и редактирование</option><option value="admin">Admin — полный доступ</option></select></label><textarea data-note="${r.id}" rows="2" placeholder="Комментарий админа (необязательно)"></textarea><div class="access-action-row"><button class="btn primary" data-approve="${r.id}">Одобрить</button><button class="btn danger" data-reject="${r.id}">Отклонить</button></div></div>` : `<div class="access-result"><b>${r.status==="approved" ? `Роль: ${esc(r.assigned_role || "reader")}` : "Доступ не выдан"}</b>${r.review_note ? `<div class="small">${esc(r.review_note)}</div>` : ""}</div>`}</div></article>`).join("") : '<div class="empty">Заявок пока нет.</div>'}</div></section>`;
+
+    const userCards = users.length ? users.map(u=>{
+      const isSelf = u.id===authUser?.id;
+      const subtitle = [
+        u.email ? esc(u.email) : "",
+        isSelf ? "это вы" : ""
+      ].filter(Boolean).join(" · ");
+      return `<article class="card access-request approved"><div class="access-request-main"><div><div class="eyebrow">Пользователь</div><h2>${esc(u.display_name || u.email || u.id)}</h2>${subtitle ? `<div class="small">${subtitle}</div>` : ""}<p class="muted">Текущая роль: <b>${esc(u.role)}</b></p></div><div class="access-actions"><label>Роль<select data-user-role="${u.id}" ${isSelf ? "disabled" : ""}>${roleSelectOptions(u.role)}</select></label>${isSelf ? '<div class="small muted">Собственную роль администратора менять нельзя.</div>' : `<div class="access-action-row"><button class="btn primary" data-save-user-role="${u.id}">Сохранить роль</button></div>`}</div></div></article>`;
+    }).join("") : '<div class="empty">Пользователей с выданным доступом пока нет.</div>';
+
+    app.innerHTML=`<section class="page"><div class="page-head"><div><div class="eyebrow">Администрирование</div><h1>Доступ и роли</h1><p class="muted">Администратор может выдавать доступ новым пользователям и менять роли уже одобренных аккаунтов.</p></div><span class="meta-chip">${pending.length} ожидают</span></div><div class="page-head"><div><div class="eyebrow">Пользователи</div><h2>Роли пользователей</h2><p class="muted">Reader — просмотр, Editor — просмотр и редактирование, Admin — полный административный доступ.</p></div></div><div class="access-list">${userCards}</div><div class="page-head"><div><div class="eyebrow">История</div><h2>Заявки на доступ</h2></div></div><div class="access-list">${requests.length ? requests.map(r=>`<article class="card access-request ${r.status}"><div class="access-request-main"><div><div class="eyebrow">${esc(r.status==="pending" ? "Ожидает решения" : r.status==="approved" ? "Одобрено" : "Отклонено")}</div><h2>${esc(r.display_name || r.email)}</h2><div class="small">${esc(r.email)} · ${new Date(r.requested_at).toLocaleString("ru-RU")}</div>${r.message ? `<p>${esc(r.message)}</p>` : '<p class="muted">Комментарий не оставлен.</p>'}</div>${r.status==="pending" ? `<div class="access-actions"><label>Роль<select data-role="${r.id}"><option value="reader">Reader — только чтение</option><option value="editor">Editor — чтение и редактирование</option><option value="admin">Admin — полный доступ</option></select></label><textarea data-note="${r.id}" rows="2" placeholder="Комментарий админа (необязательно)"></textarea><div class="access-action-row"><button class="btn primary" data-approve="${r.id}">Одобрить</button><button class="btn danger" data-reject="${r.id}">Отклонить</button></div></div>` : `<div class="access-result"><b>${r.status==="approved" ? `Роль при одобрении: ${esc(r.assigned_role || "reader")}` : "Доступ не выдан"}</b>${r.review_note ? `<div class="small">${esc(r.review_note)}</div>` : ""}</div>`}</div></article>`).join("") : '<div class="empty">Заявок пока нет.</div>'}</div></section>`;
+
+    $$("[data-save-user-role]",app).forEach(btn=>btn.onclick=async()=>{
+      const id=btn.dataset.saveUserRole;
+      const role=$(`[data-user-role="${id}"]`,app).value;
+      btn.disabled=true;
+      try {
+        await changeAdminUserRole(id,role);
+        toast("Роль пользователя обновлена");
+        await renderAccessRequests(app);
+      } catch(e) {
+        toast(e.message);
+        btn.disabled=false;
+      }
+    });
 
     $$("[data-approve]",app).forEach(btn=>btn.onclick=async()=>{
       const id=btn.dataset.approve;
