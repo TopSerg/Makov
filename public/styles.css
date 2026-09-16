@@ -77,3 +77,7 @@
 .moderation-actions{display:grid;gap:8px}
 @media(max-width:1050px){.question-toolbar{grid-template-columns:1fr 1fr}.archive-toggle{white-space:normal}.moderation-item{grid-template-columns:1fr}}
 @media(max-width:620px){.question-toolbar{grid-template-columns:1fr}.question-card-head{flex-direction:column}.question-state{align-self:flex-start}}
+
+.edge.probable{stroke:#c99b19;stroke-dasharray:8 5}
+.branch-divider.candidate{stroke:#b8afa1;stroke-dasharray:4 8}
+.branch-title.candidate-title{fill:#8a8072}
