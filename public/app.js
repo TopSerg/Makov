@@ -359,7 +359,7 @@
 
   function generationOf(p) {
     if (Number.isInteger(p.generation)) return p.generation;
-    const m = String(p.birth_display || '').match(/(18|19|20)\\d{2}/);
+    const m = String(p.birth_display || '').match(/(18|19|20)\d{2}/);
     if (!m) return 0;
     const year = Number(m[0]);
     return Math.max(0, Math.min(8, Math.round((2002 - year) / 26)));
