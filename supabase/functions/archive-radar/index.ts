@@ -122,7 +122,7 @@ async function processTarget(target: any) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25_000);
-    const response = await fetch(String(target.source_url), {
+    let response = await fetch(String(target.source_url), {
       headers: {
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
@@ -134,6 +134,18 @@ async function processTarget(target: any) {
       redirect: "follow",
       signal: controller.signal,
     });
+
+    if (response.status === 403 || response.status === 429) {
+      response = await fetch(`https://r.jina.ai/${String(target.source_url)}`, {
+        headers: {
+          accept: "text/plain,text/markdown;q=0.9,*/*;q=0.5",
+          "x-no-cache": "true",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    }
+
     clearTimeout(timeout);
     httpStatus = response.status;
 
