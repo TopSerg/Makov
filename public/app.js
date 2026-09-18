@@ -82,12 +82,39 @@
   }
 
   async function loadAuthConfig() {
-    const r = await fetch("/.netlify/functions/auth-config", { cache: "no-store" });
-    if (!r.ok) throw new Error("Не удалось загрузить конфигурацию авторизации");
-    authConfig = await r.json();
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch("/.netlify/functions/auth-config", { cache: "no-store" });
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
+        }
+
+        const config = await r.json();
+        if (!config?.url || !config?.publishableKey) {
+          throw new Error("неполная конфигурация");
+        }
+
+        authConfig = config;
+        return authConfig;
+      } catch (error) {
+        lastError = error;
+        authConfig = null;
+        if (attempt === 0) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+    }
+
+    throw new Error(`Не удалось загрузить конфигурацию авторизации: ${lastError?.message || "неизвестная ошибка"}`);
   }
 
   async function authRest(path, options={}) {
+    if (!authConfig?.url || !authConfig?.publishableKey) {
+      await loadAuthConfig();
+    }
+
     const headers = {
       apikey: authConfig.publishableKey,
       "content-type": "application/json",
