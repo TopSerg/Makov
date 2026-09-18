@@ -1,0 +1,36 @@
+name: Archive Radar
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/archive-radar.yml"
+      - "supabase/functions/archive-radar/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Request GitHub OIDC token and run archive radar
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOKEN_JSON="$(
+            curl -fsSL               -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=makov-archive-radar"
+          )"
+
+          OIDC_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);if(!j.value)process.exit(2);process.stdout.write(j.value)})'
+          )"
+
+          curl --fail-with-body -sS             -X POST             -H "Authorization: Bearer $OIDC_TOKEN"             "https://gymrxdpapspwyerlesyg.supabase.co/functions/v1/archive-radar"
