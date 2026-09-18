@@ -183,6 +183,7 @@ async function processTarget(target: any) {
       success: true,
       content_hash: contentHash,
       matched_patterns: matched,
+      response_excerpt: normalized.slice(0, 1500),
       error: null,
     });
 
