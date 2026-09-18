@@ -343,6 +343,37 @@
     return r.json();
   }
 
+
+  async function supabaseRequest(path, options={}, retry=true) {
+    if (!authConfig?.url || !authConfig?.publishableKey) await loadAuthConfig();
+    const token = await ensureAccessToken();
+    if (!token) throw new Error("Сессия истекла");
+    const headers = { apikey: authConfig.publishableKey, Authorization: `Bearer ${token}`, ...(options.headers || {}) };
+    let r = await fetch(`${authConfig.url}${path}`, { ...options, headers });
+    if (r.status === 401 && retry && await refreshSession()) return supabaseRequest(path, options, false);
+    if (!r.ok) {
+      let message = `HTTP ${r.status}`;
+      try { const data = await r.json(); message = data.message || data.error || data.msg || message; } catch {}
+      throw new Error(message);
+    }
+    return r;
+  }
+
+  async function supabaseJson(path, options={}) {
+    const r = await supabaseRequest(path, options);
+    if (r.status === 204) return null;
+    return r.json();
+  }
+
+  function storageObjectPath(path) { return path.split('/').map(encodeURIComponent).join('/'); }
+  function safeUploadName(name) { return String(name || 'file').replace(/[\\/]+/g,'_').replace(/[\u0000-\u001f\u007f]+/g,'').trim().slice(0,180) || 'file'; }
+  function fileSizeText(bytes) {
+    const n = Number(bytes || 0);
+    if (n < 1024) return `${n} Б`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
+    return `${(n / 1024 / 1024).toFixed(1)} МБ`;
+  }
+
   async function loadTree() {
     const data = await api('/.netlify/functions/tree');
     people = data.people || [];
@@ -377,6 +408,7 @@
     try {
       if ((page || 'tree') === 'tree') renderTree(app);
       else if (page === 'person') await renderPerson(app, id);
+      else if (page === 'contribute') await renderContribute(app);
       else if (page === 'questions') {
         if (viewer?.role === "reader") location.hash = '#/tree';
         else await renderQuestions(app);
@@ -1425,6 +1457,61 @@
         btn.disabled=false;
       }
     });
+  }
+
+
+  async function renderContribute(app) {
+    let branches = [];
+    try { branches = await supabaseJson('/rest/v1/research_branches?select=id,name,status,sort_order&status=eq.active&order=sort_order.asc') || []; } catch {}
+    const ownFilter = viewer?.role === 'admin' ? '' : `&submitted_by=eq.${encodeURIComponent(authUser?.id || '')}`;
+    const select = encodeURIComponent('id,submitted_by,title,body,branch_id,status,review_note,created_at,family_contribution_files(id,original_name,mime_type,size_bytes,object_path)');
+    const contributions = await supabaseJson(`/rest/v1/family_contributions?select=${select}${ownFilter}&order=created_at.desc&limit=30`) || [];
+    const branchMap = new Map(branches.map(b => [b.id,b.name]));
+    const statusLabel = status => ({pending:'Новый материал',reviewed:'Просмотрено',processed:'Учтено',rejected:'Отклонено'}[status] || status);
+    const statusClass = status => status === 'processed' ? 'confirmed' : status === 'rejected' ? 'unconfirmed' : 'limited';
+
+    app.innerHTML = `<section class="page contribution-page">
+      <div class="page-head"><div><div class="eyebrow">Семейный архив</div><h1>Добавить информацию</h1><p class="muted">Оставьте факт, воспоминание, уточнение или документ. Материал сначала сохраняется как входящая информация.</p></div></div>
+      <div class="grid contribution-grid">
+        <article class="card span-7"><h2>Новый материал</h2><form id="contributionForm" class="contribution-form">
+          <label>Заголовок <span class="small">(необязательно)</span><input id="contributionTitle" maxlength="200" placeholder="Например: документы Цыбенко из семейного архива"></label>
+          <label>К какой ветке относится <span class="small">(необязательно)</span><select id="contributionBranch"><option value="">Не знаю / несколько веток</option>${branches.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select></label>
+          <label>Текст <span class="small">(можно оставить пустым, если прикладываете файлы)</span><textarea id="contributionBody" rows="9" maxlength="20000" placeholder="Напишите всё, что знаете: кто это сообщил, о каком человеке речь, даты, места, ссылки и пояснения."></textarea></label>
+          <label class="file-drop"><span><b>Файлы</b> <span class="small">до 10 файлов, каждый до 25 МБ</span></span><input id="contributionFiles" type="file" multiple><span class="file-drop-hint">Фотографии, PDF, документы, таблицы и другие материалы</span></label>
+          <div id="selectedContributionFiles" class="selected-files"></div>
+          <div class="contribution-actions"><button class="btn primary" id="contributionSubmit" type="submit">Сохранить материал</button><span class="small">Файлы хранятся в приватном семейном хранилище.</span></div>
+        </form></article>
+        <aside class="card span-5 contribution-help"><h2>Что сюда можно добавить</h2><ul class="facts"><li>семейное воспоминание;</li><li>фотографию, скан, PDF или архивный документ;</li><li>ссылку и пояснение;</li><li>исправление существующей информации;</li><li>любую зацепку, даже если пока непонятно, куда её привязать.</li></ul><div class="callout"><b>Важно:</b> добавленный материал сначала остаётся входящей информацией. Его можно позже проверить и связать с человеком, источником или фактом.</div></aside>
+      </div>
+      <div class="page-head contribution-history-title"><div><div class="eyebrow">${viewer?.role === 'admin' ? 'Входящие материалы' : 'История'}</div><h2>${viewer?.role === 'admin' ? 'Последние добавления' : 'Ваши материалы'}</h2></div><span class="meta-chip">${contributions.length}</span></div>
+      <div class="contribution-history">${contributions.length ? contributions.map(item=>`<article class="card contribution-history-item"><div class="contribution-history-head"><div><div class="small">${new Date(item.created_at).toLocaleString('ru-RU')}</div><h2>${esc(item.title || 'Материал без заголовка')}</h2></div><span class="status-pill ${statusClass(item.status)}">${esc(statusLabel(item.status))}</span></div>${item.branch_id?`<div class="chip-row"><span class="chip">${esc(branchMap.get(item.branch_id)||item.branch_id)}</span></div>`:''}${item.body?`<p class="contribution-body">${esc(item.body)}</p>`:''}${(item.family_contribution_files||[]).length?`<div class="contribution-files">${item.family_contribution_files.map(f=>`<div class="contribution-file"><span>📎 ${esc(f.original_name)}</span><span class="small">${fileSizeText(f.size_bytes)}</span></div>`).join('')}</div>`:''}${item.review_note?`<div class="small contribution-review-note">Комментарий: ${esc(item.review_note)}</div>`:''}</article>`).join(''):'<div class="empty card">Вы ещё ничего не добавляли.</div>'}</div>
+    </section>`;
+
+    const fileInput = $('#contributionFiles',app);
+    fileInput.onchange = () => {
+      $('#selectedContributionFiles',app).innerHTML = [...fileInput.files].map(f=>`<div class="contribution-file"><span>📎 ${esc(f.name)}</span><span class="small">${fileSizeText(f.size)}</span></div>`).join('');
+    };
+
+    $('#contributionForm',app).onsubmit = async e => {
+      e.preventDefault();
+      const title=$('#contributionTitle',app).value.trim(), body=$('#contributionBody',app).value.trim(), branchId=$('#contributionBranch',app).value||null;
+      const files=[...fileInput.files];
+      if(!body && !files.length){ toast('Добавьте текст или хотя бы один файл'); return; }
+      if(files.length>10){ toast('Можно прикрепить не более 10 файлов за раз'); return; }
+      const tooLarge=files.find(f=>f.size>25*1024*1024); if(tooLarge){ toast(`Файл «${tooLarge.name}» больше 25 МБ`); return; }
+      const btn=$('#contributionSubmit',app); btn.disabled=true; btn.textContent='Сохранение…';
+      try {
+        const rows=await supabaseJson('/rest/v1/family_contributions',{method:'POST',headers:{'content-type':'application/json','Prefer':'return=representation'},body:JSON.stringify({submitted_by:authUser.id,title:title||null,body,branch_id:branchId})});
+        const contribution=rows?.[0]; if(!contribution?.id) throw new Error('Не удалось создать запись материала');
+        for(let i=0;i<files.length;i++){
+          btn.textContent=`Загрузка файлов ${i+1}/${files.length}…`;
+          const f=files[i], randomPart=crypto.randomUUID(), objectPath=`${authUser.id}/${contribution.id}/${randomPart}-${safeUploadName(f.name)}`;
+          await supabaseRequest(`/storage/v1/object/family-contributions/${storageObjectPath(objectPath)}`,{method:'POST',headers:{'content-type':f.type||'application/octet-stream','x-upsert':'false'},body:f});
+          await supabaseJson('/rest/v1/family_contribution_files',{method:'POST',headers:{'content-type':'application/json','Prefer':'return=minimal'},body:JSON.stringify({contribution_id:contribution.id,uploaded_by:authUser.id,bucket:'family-contributions',object_path:objectPath,original_name:f.name,mime_type:f.type||null,size_bytes:f.size})});
+        }
+        toast('Материал сохранён'); await renderContribute(app);
+      } catch(error){ toast(error.message||'Не удалось сохранить материал'); btn.disabled=false; btn.textContent='Сохранить материал'; }
+    };
   }
 
   function renderAbout(app) {
