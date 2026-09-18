@@ -158,6 +158,13 @@ async function processTarget(target: any) {
     const raw = await response.text();
     if (raw.length > 5_000_000) throw new Error("response body too large");
     const normalized = normalizeHtml(raw);
+    if (
+      normalized.includes("403 - доступ запрещён") ||
+      normalized.includes("target url returned error 403") ||
+      normalized.includes("технических ограничений доступа")
+    ) {
+      throw new Error("source blocked by geographic/access policy");
+    }
     const contentHash = await sha256(normalized);
 
     const matcher = target.matcher || {};
