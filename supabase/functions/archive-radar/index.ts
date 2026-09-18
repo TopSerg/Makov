@@ -125,8 +125,11 @@ async function processTarget(target: any) {
     const response = await fetch(String(target.source_url), {
       headers: {
         "user-agent":
-          "MakovArchiveRadar/1.0 (+https://github.com/TopSerg/Makov)",
-        accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.7,en;q=0.6",
+        "cache-control": "no-cache",
+        pragma: "no-cache",
       },
       redirect: "follow",
       signal: controller.signal,
