@@ -489,28 +489,84 @@
       return unit.members.length*W + Math.max(0,unit.members.length-1)*PERSON_GAP;
     }
 
-    function orderOfUnit(unit){
-      const values=unit.members.map(p=>p.layout_order).filter(Number.isFinite);
-      return values.length ? Math.min(...values) : null;
-    }
+    function separateOverlappingCards(pos){
+      const minimumDistance=W+PERSON_GAP;
+      const rows=new Map();
 
-    function manualLayoutX(person){
-      // Supabase returns an unset numeric column as null. Number(null) is 0,
-      // so converting first used to pin every newly added person to the tree
-      // centre instead of letting the branch planner position them.
-      if(person.layout_x===null || person.layout_x===undefined || person.layout_x==='') return null;
-      const value=Number(person.layout_x);
-      return Number.isFinite(value)?value:null;
+      for(const [id,point] of pos){
+        if(!rows.has(point.generation)) rows.set(point.generation,[]);
+        rows.get(point.generation).push({id,point});
+      }
+
+      for(const row of rows.values()){
+        row.sort((a,b)=>a.point.x-b.point.x);
+
+        // Project the recursively calculated centres onto the nearest
+        // collision-free row.
+        // This is an isotonic regression of x - index*minimumDistance, so a
+        // crowded group is spread to both sides instead of drifting right.
+        const blocks=[];
+        row.forEach((entry,index)=>{
+          blocks.push({start:index,end:index,sum:entry.point.x-index*minimumDistance,count:1});
+          while(blocks.length>1){
+            const right=blocks[blocks.length-1];
+            const left=blocks[blocks.length-2];
+            if(left.sum/left.count<=right.sum/right.count) break;
+            blocks.splice(blocks.length-2,2,{
+              start:left.start,
+              end:right.end,
+              sum:left.sum+right.sum,
+              count:left.count+right.count
+            });
+          }
+        });
+
+        for(const block of blocks){
+          const base=block.sum/block.count;
+          for(let index=block.start;index<=block.end;index++){
+            row[index].point.x=base+index*minimumDistance;
+          }
+        }
+      }
     }
 
     function compareUnits(a,b){
-      const ao=orderOfUnit(a), bo=orderOfUnit(b);
-      if(ao!==null || bo!==null){
-        if(ao===null) return 1;
-        if(bo===null) return -1;
-        if(ao!==bo) return ao-bo;
+      const firstA=[...a.members].sort(comparePeople)[0];
+      const firstB=[...b.members].sort(comparePeople)[0];
+      return comparePeople(firstA,firstB);
+    }
+
+    function comparePeople(a,b){
+      const year=p=>Number(String(p.birth_display||'').match(/(18|19|20)\d{2}/)?.[0]||9999);
+      return year(a)-year(b) || fullName(a).localeCompare(fullName(b),'ru');
+    }
+
+    function orderFamilyMembers(members){
+      if(members.length<2) return members;
+      const ids=new Set(members.map(p=>p.id));
+      const spouseDegree=new Map(members.map(p=>[p.id,0]));
+      for(const r of spouseEdges){
+        if(!ids.has(r.person_a_id) || !ids.has(r.person_b_id)) continue;
+        spouseDegree.set(r.person_a_id,(spouseDegree.get(r.person_a_id)||0)+1);
+        spouseDegree.set(r.person_b_id,(spouseDegree.get(r.person_b_id)||0)+1);
       }
-      return fullName(a.members[0]).localeCompare(fullName(b.members[0]),'ru');
+
+      const maxDegree=Math.max(...spouseDegree.values());
+      if(maxDegree<2){
+        const sexRank=p=>p.sex==='male'?0:p.sex==='female'?1:2;
+        return members.sort((a,b)=>sexRank(a)-sexRank(b) || comparePeople(a,b));
+      }
+
+      // Repeated marriage: the person connected to several spouses becomes
+      // the centre of one wide family block. The two first spouses stay next
+      // to the centre; additional spouses expand the block outwards.
+      const anchor=[...members].sort((a,b)=>
+        (spouseDegree.get(b.id)||0)-(spouseDegree.get(a.id)||0) || comparePeople(a,b)
+      )[0];
+      const spouses=members.filter(p=>p.id!==anchor.id).sort(comparePeople);
+      const left=[],right=[];
+      spouses.forEach((person,index)=>(index%2===0?left:right).push(person));
+      return [...left.reverse(),anchor,...right];
     }
 
     function coupleComponents(arr){
@@ -539,7 +595,10 @@
     }
 
     function unitPath(unit,g){
-      const paths=[...new Set(unit.map(p=>p.lineage_path || ''))];
+      // A newly added spouse may not have a lineage_path yet. An empty value
+      // must not pull the whole family block back to the centre of the tree.
+      const paths=[...new Set(unit.map(p=>p.lineage_path).filter(Boolean))];
+      if(!paths.length) return '';
       if(paths.length===1) return paths[0];
       if(g===1 && paths.includes('P') && paths.includes('M')) return '';
       let prefix=paths[0] || '';
@@ -562,18 +621,8 @@
       const units=[];
       let unitIndex=0;
       for(const [g,arr] of byGeneration){
-        for(const members of coupleComponents(arr)){
-          members.sort((a,b)=>{
-            const ao=Number.isFinite(a.layout_order)?a.layout_order:null;
-            const bo=Number.isFinite(b.layout_order)?b.layout_order:null;
-            if(ao!==null || bo!==null){
-              if(ao===null) return 1;
-              if(bo===null) return -1;
-              if(ao!==bo) return ao-bo;
-            }
-            const sexRank=x=>x.sex==='male'?0:x.sex==='female'?1:2;
-            return sexRank(a)-sexRank(b) || fullName(a).localeCompare(fullName(b),'ru');
-          });
+        for(const component of coupleComponents(arr)){
+          const members=orderFamilyMembers(component);
 
           const connected=members.some(p=>connectionConfidence.has(p.id));
           units.push({
@@ -718,23 +767,9 @@
         candidateMaxX=Math.max(candidateMaxX,cursor);
       }
 
-      // TESTED_LAYOUT_X: current family geometry was collision-checked locally.
-      // layout_x is an optional manual/tested override; people added later can
-      // still fall back to the dynamic branch planner above.
-      for (const person of visiblePeople()) {
-        const fixedX = manualLayoutX(person);
-        if (fixedX === null) continue;
-        const current = pos.get(person.id) || {};
-        const g = generationOf(person);
-        pos.set(person.id, {
-          ...current,
-          x: fixedX,
-          y: (maxGen - g) * YS,
-          generation: g,
-          path: person.lineage_path || current.path || '',
-          unitId: current.unitId || null
-        });
-      }
+      // Final invariant: recursive branch sizing is authoritative, and this
+      // safety pass guarantees a visible gap even for malformed legacy data.
+      separateOverlappingCards(pos);
 
       return {pos,plan,unitCenters,candidateStart,candidateMaxX};
     }
@@ -877,6 +912,7 @@
         ${hasCandidates?`<line class="branch-divider candidate" x1="${candidateStart-CANDIDATE_GAP/2}" y1="${minY}" x2="${candidateStart-CANDIDATE_GAP/2}" y2="${maxY}"/><text class="branch-title candidate-title" x="${(candidateStart+candidateMaxX)/2}" y="${minY+24}">НЕПРИВЯЗАННЫЕ КАНДИДАТЫ</text>`:''}
       </g>`;
 
+      const spouseLaneByGeneration=new Map();
       const spouseHtml=relationships.filter(r=>
         r.relationship_type==='spouse_of' && ids.has(r.person_a_id) && ids.has(r.person_b_id)
       ).map(r=>{
@@ -884,6 +920,15 @@
         if(!a||!b) return '';
         const left=a.x<=b.x?a:b, right=a.x<=b.x?b:a;
         const cls=r.confidence==='unconfirmed'?'unconfirmed':r.confidence==='probable'?'probable':'';
+        const blocked=[...pos.values()].some(point=>
+          point!==left && point!==right && point.y===left.y && point.x>left.x && point.x<right.x
+        );
+        if(blocked && left.y===right.y){
+          const laneIndex=spouseLaneByGeneration.get(left.generation)||0;
+          spouseLaneByGeneration.set(left.generation,laneIndex+1);
+          const laneY=left.y-H/2-18-laneIndex*12;
+          return `<path class="edge spouse ${cls}" d="M ${left.x} ${left.y-H/2} L ${left.x} ${laneY} L ${right.x} ${laneY} L ${right.x} ${right.y-H/2}"/>`;
+        }
         return `<path class="edge spouse ${cls}" d="M ${left.x+W/2} ${left.y} L ${right.x-W/2} ${right.y}"/>`;
       }).join('');
 
