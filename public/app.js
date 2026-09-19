@@ -494,6 +494,15 @@
       return values.length ? Math.min(...values) : null;
     }
 
+    function manualLayoutX(person){
+      // Supabase returns an unset numeric column as null. Number(null) is 0,
+      // so converting first used to pin every newly added person to the tree
+      // centre instead of letting the branch planner position them.
+      if(person.layout_x===null || person.layout_x===undefined || person.layout_x==='') return null;
+      const value=Number(person.layout_x);
+      return Number.isFinite(value)?value:null;
+    }
+
     function compareUnits(a,b){
       const ao=orderOfUnit(a), bo=orderOfUnit(b);
       if(ao!==null || bo!==null){
@@ -713,8 +722,8 @@
       // layout_x is an optional manual/tested override; people added later can
       // still fall back to the dynamic branch planner above.
       for (const person of visiblePeople()) {
-        const fixedX = Number(person.layout_x);
-        if (!Number.isFinite(fixedX)) continue;
+        const fixedX = manualLayoutX(person);
+        if (fixedX === null) continue;
         const current = pos.get(person.id) || {};
         const g = generationOf(person);
         pos.set(person.id, {
